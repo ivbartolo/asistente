@@ -1,0 +1,8 @@
+{
+  "name": "Asistente IA",
+  "description": "Una aplicación de asistente personal impulsada por IA que organiza cada aspecto de tu vida. Simplemente escribe lo que necesitas hacer, y la aplicación lo categorizará, priorizará y mostrará visualmente, creando un centro de mando para tu vida.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ]
+}
