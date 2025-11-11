@@ -3,6 +3,9 @@ import { Task, Category, Priority, GroundedAnswer, ShoppingItem, ProactiveSugges
 
 const STORAGE_KEY = 'vitalCommandCenter_geminiApiKey';
 
+const ENV_API_KEY = (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_GEMINI_API_KEY : undefined) as string | undefined;
+const HAS_ENV_API_KEY = Boolean(ENV_API_KEY && ENV_API_KEY.trim());
+
 let currentApiKey: string | null = null;
 let client: GoogleGenAI | null = null;
 
@@ -21,6 +24,11 @@ const persistApiKey = (apiKey: string | null) => {
     }
 };
 
+const setClient = (apiKey: string) => {
+    currentApiKey = apiKey;
+    client = createClient(apiKey);
+};
+
 const assertClient = (): GoogleGenAI => {
     if (!client) {
         throw new Error("GEMINI_CLIENT_UNINITIALIZED");
@@ -28,14 +36,15 @@ const assertClient = (): GoogleGenAI => {
     return client;
 };
 
-export const initializeClient = (apiKey: string) => {
+export const initializeClient = (apiKey: string, options: { shouldPersist?: boolean } = {}) => {
     const normalizedKey = apiKey.trim();
     if (!normalizedKey) {
         throw new Error("La clave de la API no puede estar vacía.");
     }
-    currentApiKey = normalizedKey;
-    client = createClient(normalizedKey);
-    persistApiKey(normalizedKey);
+    setClient(normalizedKey);
+    if (options.shouldPersist !== false) {
+        persistApiKey(normalizedKey);
+    }
 };
 
 export const clearClient = () => {
@@ -45,6 +54,7 @@ export const clearClient = () => {
 };
 
 export const getStoredApiKey = (): string | null => {
+    if (HAS_ENV_API_KEY) return null;
     if (typeof window === 'undefined') return null;
     try {
         return window.localStorage.getItem(STORAGE_KEY);
@@ -59,6 +69,16 @@ export const getCurrentApiKey = () => currentApiKey;
 export const isClientReady = () => client !== null;
 
 export const getClient = (): GoogleGenAI => assertClient();
+
+export const hasEnvApiKey = () => HAS_ENV_API_KEY;
+
+if (HAS_ENV_API_KEY) {
+    try {
+        initializeClient(ENV_API_KEY!, { shouldPersist: false });
+    } catch (error) {
+        console.error("No se pudo inicializar la clave de Gemini desde las variables de entorno.", error);
+    }
+}
 
 const openGoogleMapsNavigation: FunctionDeclaration = {
   name: 'openGoogleMapsNavigation',

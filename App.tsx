@@ -176,8 +176,9 @@ type ViewMode = 'grid' | 'calendar';
 type FilterStatus = 'all' | 'pending' | 'completed';
 
 const App: React.FC = () => {
-  const [apiKey, setApiKey] = useState<string>(() => geminiService.getStoredApiKey() ?? '');
-  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(() => !geminiService.getStoredApiKey());
+  const hasEnvApiKey = geminiService.hasEnvApiKey();
+  const [apiKey, setApiKey] = useState<string>(() => (hasEnvApiKey ? '' : geminiService.getStoredApiKey() ?? ''));
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(() => !hasEnvApiKey && !geminiService.getStoredApiKey());
 
   const [tasks, setTasks] = useState<Task[]>(() => {
     try {
@@ -248,6 +249,7 @@ const App: React.FC = () => {
   const conversationStopRequested = useRef(false);
 
   const showApiKeyPrompt = (message?: string) => {
+    if (hasEnvApiKey) return;
     if (message) {
       setChatHistory(prev => [...prev, { type: 'groundedAnswer', data: { text: message, sources: [] } }]);
     }
@@ -257,6 +259,10 @@ const App: React.FC = () => {
   const ensureGeminiReady = (options?: { notify?: boolean; message?: string }) => {
     if (geminiService.isClientReady()) {
       return true;
+    }
+    if (hasEnvApiKey) {
+      console.error("El cliente de Gemini no está listo a pesar de existir una clave de entorno.");
+      return false;
     }
     if (options?.notify) {
       const fallbackMessage = options.message ?? 'Configura tu clave API de Gemini para usar las funciones de IA.';
@@ -268,11 +274,13 @@ const App: React.FC = () => {
   };
 
   const handleSaveApiKey = (key: string) => {
+    if (hasEnvApiKey) return;
     setApiKey(key);
     setIsApiKeyModalOpen(false);
   };
 
   const handleClearApiKey = () => {
+    if (hasEnvApiKey) return;
     setApiKey('');
     geminiService.clearClient();
     setIsApiKeyModalOpen(true);
@@ -283,10 +291,13 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
+    if (hasEnvApiKey) {
+      return;
+    }
     if (apiKey) {
       try {
         if (!geminiService.isClientReady() || geminiService.getCurrentApiKey() !== apiKey) {
-          geminiService.initializeClient(apiKey);
+          geminiService.initializeClient(apiKey, { shouldPersist: true });
         }
       } catch (error) {
         console.error('No se pudo inicializar el cliente de Gemini', error);
@@ -1171,7 +1182,7 @@ const App: React.FC = () => {
     });
   }, [tasks, filters, isManuallySorted]);
   
-  const hasApiKey = Boolean(apiKey);
+  const hasApiKey = geminiService.isClientReady();
   const maximizedTask = maximizedTaskId ? tasks.find(t => t.id === maximizedTaskId) : null;
 
   return (
@@ -1179,14 +1190,16 @@ const App: React.FC = () => {
       <header className="p-4 border-b border-gray-700/50 sticky top-0 bg-gray-900/80 backdrop-blur-sm z-10">
         <div className="max-w-6xl mx-auto flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h1 className="text-2xl font-bold text-center sm:text-left">Asistente IA</h1>
-          <button
-            onClick={() => setIsApiKeyModalOpen(true)}
-            className="inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg border border-purple-500/60 text-purple-200 hover:bg-purple-500/10 transition-colors self-center sm:self-auto"
-            title={hasApiKey ? 'Actualizar la clave de Gemini' : 'Configurar la clave de Gemini'}
-          >
-            <span className={`h-2 w-2 rounded-full ${hasApiKey ? 'bg-emerald-400' : 'bg-red-400'}`} aria-hidden="true" />
-            <span>{hasApiKey ? 'Actualizar clave API' : 'Configurar clave API'}</span>
-          </button>
+          {!hasEnvApiKey && (
+            <button
+              onClick={() => setIsApiKeyModalOpen(true)}
+              className="inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg border border-purple-500/60 text-purple-200 hover:bg-purple-500/10 transition-colors self-center sm:self-auto"
+              title={hasApiKey ? 'Actualizar la clave de Gemini' : 'Configurar la clave de Gemini'}
+            >
+              <span className={`h-2 w-2 rounded-full ${hasApiKey ? 'bg-emerald-400' : 'bg-red-400'}`} aria-hidden="true" />
+              <span>{hasApiKey ? 'Actualizar clave API' : 'Configurar clave API'}</span>
+            </button>
+          )}
         </div>
       </header>
       
@@ -1389,14 +1402,16 @@ const App: React.FC = () => {
         </form>
       </footer>
 
-      <Modal isOpen={isApiKeyModalOpen} onClose={handleCancelApiKeyModal}>
-        <ApiKeyForm
-          initialValue={apiKey}
-          onSave={handleSaveApiKey}
-          onCancel={handleCancelApiKeyModal}
-          onClear={handleClearApiKey}
-        />
-      </Modal>
+      {!hasEnvApiKey && (
+        <Modal isOpen={isApiKeyModalOpen} onClose={handleCancelApiKeyModal}>
+          <ApiKeyForm
+            initialValue={apiKey}
+            onSave={handleSaveApiKey}
+            onCancel={handleCancelApiKeyModal}
+            onClear={handleClearApiKey}
+          />
+        </Modal>
+      )}
 
       <Modal isOpen={isEditModalOpen} onClose={handleCloseModal}>
         {editingTask && (
