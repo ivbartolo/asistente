@@ -174,7 +174,7 @@ const App: React.FC = () => {
   const [datePickerTask, setDatePickerTask] = useState<Task | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState('default');
-  const [isFiltersVisible, setIsFiltersVisible] = useState(true);
+  const [isFiltersVisible, setIsFiltersVisible] = useState(false);
   const [filters, setFilters] = useState({
     searchTerm: '',
     category: 'all',
@@ -551,6 +551,10 @@ const App: React.FC = () => {
   };
 
   const handleDismissSubtaskSuggestion = (chatItemIndex: number) => {
+    setChatHistory(prev => prev.filter((_, index) => index !== chatItemIndex));
+  };
+
+  const handleDismissChatItem = (chatItemIndex: number) => {
     setChatHistory(prev => prev.filter((_, index) => index !== chatItemIndex));
   };
 
@@ -1347,7 +1351,14 @@ const App: React.FC = () => {
         {chatHistory.length > 0 && <hr className="border-gray-700" />}
 
         {chatHistory.map((item, index) => (
-          <div key={index} className="animate-fade-in">
+          <div key={index} className="relative animate-fade-in">
+            <button
+              onClick={() => handleDismissChatItem(index)}
+              className="absolute -right-2 -top-2 bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white p-1 rounded-full shadow-lg transition-colors"
+              aria-label="Cerrar conversación"
+            >
+              <XIcon className="w-4 h-4" />
+            </button>
             {item.type === 'task' && <p className="text-green-400 italic text-center my-4">✓ Tarea añadida: "{item.data.description}"</p>}
             {item.type === 'groundedAnswer' && <ChatResponseCard answer={item.data} />}
             {item.type === 'aiQuestion' && <ChatResponseCard answer={{text: item.text, sources: []}} />}
