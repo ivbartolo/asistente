@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Task, Category, Priority, ChatHistoryItem, ProactiveSuggestion, GroundedAnswer, Subtask, Attachment } from './types';
 import { PRIORITY_ORDER } from './constants';
 import * as geminiService from './services/geminiService';
+import { taskRepository } from './services/taskRepository';
 
 import TaskCard from './components/TaskCard';
 import CalendarView from './components/CalendarView';
@@ -126,52 +127,6 @@ const initialTasks: Task[] = [
   { id: '3', description: 'Hacer la compra de la semana', category: Category.Home, priority: Priority.Reminder, isDone: true },
 ];
 
-const findAndModifySubtasks = (subtasks: Subtask[], targetId: string, modifyFn: (subtask: Subtask) => Subtask): Subtask[] => {
-  return subtasks.map(subtask => {
-    if (subtask.id === targetId) {
-      return modifyFn(subtask);
-    }
-    if (subtask.subtasks) {
-      return { ...subtask, subtasks: findAndModifySubtasks(subtask.subtasks, targetId, modifyFn) };
-    }
-    return subtask;
-  });
-};
-
-const findAndFilterSubtasks = (subtasks: Subtask[], targetId: string): Subtask[] => {
-  const filtered = subtasks.filter(st => st.id !== targetId);
-  return filtered.map(subtask => {
-    if (subtask.subtasks) {
-      return { ...subtask, subtasks: findAndFilterSubtasks(subtask.subtasks, targetId) };
-    }
-    return subtask;
-  });
-};
-
-const findAndAddSubtask = (subtasks: Subtask[], parentId: string, newSubtasks: Subtask[]): Subtask[] => {
-  return subtasks.map(subtask => {
-    if (subtask.id === parentId) {
-      return { ...subtask, subtasks: [...(subtask.subtasks || []), ...newSubtasks] };
-    }
-    if (subtask.subtasks) {
-      return { ...subtask, subtasks: findAndAddSubtask(subtask.subtasks, parentId, newSubtasks) };
-    }
-    return subtask;
-  });
-};
-
-const areAllSubtasksDone = (subtasks: Subtask[]): boolean => {
-  return subtasks.every(st => st.isDone && (!st.subtasks || areAllSubtasksDone(st.subtasks)));
-};
-
-const markAllSubtasks = (subtasks: Subtask[], isDone: boolean): Subtask[] => {
-  return subtasks.map(st => ({
-    ...st,
-    isDone,
-    subtasks: st.subtasks ? markAllSubtasks(st.subtasks, isDone) : st.subtasks,
-  }));
-};
-
 type ViewMode = 'grid' | 'calendar';
 type FilterStatus = 'all' | 'pending' | 'completed';
 
@@ -180,17 +135,10 @@ const App: React.FC = () => {
   const [apiKey, setApiKey] = useState<string>(() => (hasEnvApiKey ? '' : geminiService.getStoredApiKey() ?? ''));
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(() => !hasEnvApiKey && !geminiService.getStoredApiKey());
 
-  const [tasks, setTasks] = useState<Task[]>(() => {
-    try {
-      const savedTasks = localStorage.getItem('vitalCommandCenter_tasks');
-      if (savedTasks) {
-        return JSON.parse(savedTasks);
-      }
-    } catch (error) {
-      console.error('Could not load tasks from localStorage', error);
-    }
-    return initialTasks;
-  });
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [areTasksLoading, setAreTasksLoading] = useState<boolean>(true);
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  const hasSeededRef = useRef(false);
   
   const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>(() => {
     try {
@@ -289,6 +237,50 @@ const App: React.FC = () => {
   const handleCancelApiKeyModal = () => {
     setIsApiKeyModalOpen(false);
   };
+
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const loadTasks = useCallback(
+    async ({ showSpinner = true }: { showSpinner?: boolean } = {}) => {
+      if (showSpinner) setAreTasksLoading(true);
+      setTasksError(null);
+
+      try {
+        let fetchedTasks = await taskRepository.fetchTasks();
+
+        if (!hasSeededRef.current && fetchedTasks.length === 0) {
+          hasSeededRef.current = true;
+          await taskRepository.seedInitialTasks(initialTasks);
+          fetchedTasks = await taskRepository.fetchTasks();
+        } else {
+          hasSeededRef.current = true;
+        }
+
+        if (isMountedRef.current) {
+          setTasks(fetchedTasks);
+        }
+      } catch (error) {
+        console.error('Error loading tasks from Supabase', error);
+        if (isMountedRef.current) {
+          setTasksError('No se pudieron cargar las tareas. Intenta recargar.');
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setAreTasksLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    void loadTasks();
+  }, [loadTasks]);
 
   useEffect(() => {
     if (hasEnvApiKey) {
@@ -410,15 +402,6 @@ const App: React.FC = () => {
     feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, tasks, isLoading]);
 
-  // Persist tasks to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('vitalCommandCenter_tasks', JSON.stringify(tasks));
-    } catch (error) {
-      console.error('Could not save tasks to localStorage', error);
-    }
-  }, [tasks]);
-
   // Persist chat history to localStorage
   useEffect(() => {
     try {
@@ -488,23 +471,34 @@ const App: React.FC = () => {
       return confirmationText;
   };
 
-  const handleAddTask = (taskData: Omit<Task, 'id' | 'isDone'>): Task => {
-    const newTask: Task = { ...taskData, id: crypto.randomUUID(), isDone: false };
-    setTasks(prev => [...prev, newTask]);
+  const handleAddTask = useCallback(
+    async (taskData: Omit<Task, 'id' | 'isDone'>) => {
+      try {
+        const createdTask = await taskRepository.createTask(taskData);
+        await loadTasks({ showSpinner: false });
 
-    if (viewMode === 'calendar' && newTask.dueDate) {
-        const [year, month, day] = newTask.dueDate.split('-').map(Number);
-        setCurrentCalendarDate(new Date(year, month - 1, day));
-    }
+        if (viewMode === 'calendar' && createdTask.dueDate) {
+          const [year, month, day] = createdTask.dueDate.split('-').map(Number);
+          setCurrentCalendarDate(new Date(year, month - 1, day));
+        }
 
-    return newTask;
-  };
+        return createdTask;
+      } catch (error) {
+        console.error('No se pudo crear la tarea', error);
+        setTasksError('No se pudo crear la tarea.');
+        throw error;
+      }
+    },
+    [loadTasks, viewMode]
+  );
 
   const handleAddShoppingResultAsTask = (description: string) => {
-    handleAddTask({
-        description,
-        category: Category.Shopping,
-        priority: Priority.Reminder,
+    void handleAddTask({
+      description,
+      category: Category.Shopping,
+      priority: Priority.Reminder,
+    }).catch(error => {
+      console.error('No se pudo añadir la sugerencia de compra como tarea', error);
     });
   };
   
@@ -518,40 +512,42 @@ const App: React.FC = () => {
   };
 
   const handleAddManualSubtask = (taskId: string, parentSubtaskId: string | null, description: string) => {
-    const newSubtask: Subtask = { id: crypto.randomUUID(), description, isDone: false };
-    setTasks(prevTasks => prevTasks.map(task => {
-      if (task.id === taskId) {
-        if (parentSubtaskId === null) {
-            return { ...task, subtasks: [...(task.subtasks || []), newSubtask] };
-        } else if (task.subtasks){
-            const updatedSubtasks = findAndAddSubtask(task.subtasks, parentSubtaskId, [newSubtask]);
-            return { ...task, subtasks: updatedSubtasks };
-        }
+    void (async () => {
+      try {
+        await taskRepository.addSubtask(taskId, parentSubtaskId, description);
+        await loadTasks({ showSpinner: false });
+      } catch (error) {
+        console.error('No se pudo añadir la subtarea', error);
+        setTasksError('No se pudo añadir la subtarea.');
       }
-      return task;
-    }));
+    })();
   };
 
   const handleAddSuggestionAsSubtask = (chatItemIndex: number, suggestionText: string, parentTaskId: string) => {
-    // 1. Add the suggestion as a subtask to the parent task.
-    handleAddManualSubtask(parentTaskId, null, suggestionText);
+    void (async () => {
+      try {
+        await taskRepository.addSubtask(parentTaskId, null, suggestionText);
+        await loadTasks({ showSpinner: false });
 
-    // 2. Remove the suggestion from the chat history item.
-    setChatHistory(prev => {
-        const newHistory = [...prev];
-        const chatItem = newHistory[chatItemIndex];
-        if (chatItem.type === 'subtaskSuggestion') {
+        setChatHistory(prev => {
+          const newHistory = [...prev];
+          const chatItem = newHistory[chatItemIndex];
+          if (chatItem?.type === 'subtaskSuggestion') {
             const updatedSuggestions = chatItem.suggestions.filter(s => s !== suggestionText);
-            
-            // If all suggestions have been added, remove the suggestion card entirely.
+
             if (updatedSuggestions.length === 0) {
-                newHistory.splice(chatItemIndex, 1);
+              newHistory.splice(chatItemIndex, 1);
             } else {
-                newHistory[chatItemIndex] = { ...chatItem, suggestions: updatedSuggestions };
+              newHistory[chatItemIndex] = { ...chatItem, suggestions: updatedSuggestions };
             }
-        }
-        return newHistory;
-    });
+          }
+          return newHistory;
+        });
+      } catch (error) {
+        console.error('No se pudo añadir la subtarea sugerida', error);
+        setTasksError('No se pudo añadir la subtarea sugerida.');
+      }
+    })();
   };
 
   const handleDismissSubtaskSuggestion = (chatItemIndex: number) => {
@@ -591,7 +587,7 @@ const App: React.FC = () => {
             const refinedTaskData = await geminiService.refineTask(conversationContext.originalPrompt, currentInput);
             
             if (refinedTaskData) {
-                const newTask = handleAddTask(refinedTaskData);
+                const newTask = await handleAddTask(refinedTaskData);
                 setChatHistory(prev => [...prev, { type: 'task', data: newTask }]);
 
                 const subtasks = await geminiService.generateSubtasks(newTask.description);
@@ -608,7 +604,7 @@ const App: React.FC = () => {
 
             if (classification?.queryType === 'task') {
                 if ('task' in classification) {
-                    const newTask = handleAddTask(classification.task);
+                    const newTask = await handleAddTask(classification.task);
                     setChatHistory(prev => [...prev, { type: 'task', data: newTask }]);
                     const subtasks = await geminiService.generateSubtasks(newTask.description);
                     if (subtasks.length > 0) {
@@ -771,7 +767,7 @@ const App: React.FC = () => {
                 const refinedTaskData = await geminiService.refineTask(conversationContext.originalPrompt, prompt);
                 setConversationContext(null);
                 if (refinedTaskData) {
-                    const newTask = handleAddTask(refinedTaskData);
+                    const newTask = await handleAddTask(refinedTaskData);
                     setChatHistory(prev => [...prev, { type: 'task', data: newTask }]);
                     return `Claro, he añadido la tarea: ${newTask.description}.`;
                 } else {
@@ -785,7 +781,7 @@ const App: React.FC = () => {
 
             if (classification?.queryType === 'task') {
                 if ('task' in classification) {
-                    const newTask = handleAddTask(classification.task);
+                    const newTask = await handleAddTask(classification.task);
                     setChatHistory(prev => [...prev, { type: 'task', data: newTask }]);
                     return `Tarea añadida: ${newTask.description}.`;
                 } else {
@@ -908,22 +904,30 @@ const App: React.FC = () => {
     };
 
   const handleToggleDone = (id: string) => {
-    setTasks(tasks.map(t => {
-      if (t.id === id) {
-        const newIsDone = !t.isDone;
-        return {
-          ...t,
-          isDone: newIsDone,
-          subtasks: t.subtasks ? markAllSubtasks(t.subtasks, newIsDone) : t.subtasks,
-        };
+    const targetTask = tasks.find(t => t.id === id);
+    if (!targetTask) return;
+
+    const newIsDone = !targetTask.isDone;
+
+    void (async () => {
+      try {
+        await taskRepository.setTaskDone(id, newIsDone);
+        await taskRepository.setAllSubtasksDone(id, newIsDone);
+        await loadTasks({ showSpinner: false });
+      } catch (error) {
+        console.error('No se pudo actualizar el estado de la tarea', error);
+        setTasksError('No se pudo actualizar el estado de la tarea.');
       }
-      return t;
-    }));
+    })();
   };
   
   const handleAddSuggestion = (description: string) => {
-    handleAddTask({ description, category: Category.Other, priority: Priority.Idea });
-    setSuggestions([]);
+    void handleAddTask({ description, category: Category.Other, priority: Priority.Idea })
+      .then(() => setSuggestions([]))
+      .catch(error => {
+        console.error('No se pudo añadir la sugerencia como tarea', error);
+        setTasksError('No se pudo añadir la sugerencia.');
+      });
   };
 
   const handleOpenEditModal = (task: Task) => {
@@ -944,13 +948,29 @@ const App: React.FC = () => {
   };
 
   const handleSetTaskDate = (taskId: string, date: string) => {
-    setTasks(tasks.map(t => t.id === taskId ? { ...t, dueDate: date } : t));
     setDatePickerTask(null);
+    void (async () => {
+      try {
+        await taskRepository.setTaskDueDate(taskId, date);
+        await loadTasks({ showSpinner: false });
+      } catch (error) {
+        console.error('No se pudo actualizar la fecha de la tarea', error);
+        setTasksError('No se pudo actualizar la fecha de la tarea.');
+      }
+    })();
   };
 
   const handleUpdateTask = (updatedTask: Task) => {
-    setTasks(tasks.map(t => t.id === updatedTask.id ? updatedTask : t));
-    handleCloseModal();
+    void (async () => {
+      try {
+        await taskRepository.updateTask(updatedTask);
+        await loadTasks({ showSpinner: false });
+        handleCloseModal();
+      } catch (error) {
+        console.error('No se pudo guardar la tarea', error);
+        setTasksError('No se pudo guardar la tarea.');
+      }
+    })();
   };
 
   const handleGenerateAndAddSubtasks = async (taskId: string, parentSubtaskId: string | null, taskDescription: string) => {
@@ -961,23 +981,10 @@ const App: React.FC = () => {
     setGeneratingSubtasksFor(loadingId);
     try {
         const subtaskDescriptions = await geminiService.generateSubtasks(taskDescription);
-        const newSubtasks: Subtask[] = subtaskDescriptions.map(desc => ({
-            id: crypto.randomUUID(),
-            description: desc,
-            isDone: false,
-        }));
-
-        setTasks(prevTasks => prevTasks.map(task => {
-            if (task.id === taskId) {
-                if (parentSubtaskId === null) {
-                    return { ...task, subtasks: [...(task.subtasks || []), ...newSubtasks] };
-                } else if (task.subtasks) {
-                    const updatedSubtasks = findAndAddSubtask(task.subtasks, parentSubtaskId, newSubtasks);
-                    return { ...task, subtasks: updatedSubtasks };
-                }
-            }
-            return task;
-        }));
+        if (subtaskDescriptions.length > 0) {
+          await taskRepository.addSubtasks(taskId, parentSubtaskId, subtaskDescriptions);
+          await loadTasks({ showSpinner: false });
+        }
     } catch (error) {
         console.error("Error generating subtasks:", error);
     } finally {
@@ -985,33 +992,45 @@ const App: React.FC = () => {
     }
   };
 
+  const findSubtaskById = (subtasks: Subtask[] | undefined, targetId: string): Subtask | null => {
+    if (!subtasks) return null;
+    for (const subtask of subtasks) {
+      if (subtask.id === targetId) return subtask;
+      const found = findSubtaskById(subtask.subtasks, targetId);
+      if (found) return found;
+    }
+    return null;
+  };
+
   const handleToggleSubtask = (taskId: string, subtaskId: string) => {
-    setTasks(prevTasks => prevTasks.map(task => {
-      if (task.id === taskId && task.subtasks) {
-        const updatedSubtasks = findAndModifySubtasks(
-            task.subtasks, 
-            subtaskId, 
-            st => ({ ...st, isDone: !st.isDone })
-        );
-        const allDone = areAllSubtasksDone(updatedSubtasks);
-        return { ...task, subtasks: updatedSubtasks, isDone: allDone };
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    const subtask = findSubtaskById(task.subtasks, subtaskId);
+    if (!subtask) return;
+
+    const newIsDone = !subtask.isDone;
+
+    void (async () => {
+      try {
+        await taskRepository.toggleSubtask(taskId, subtaskId, newIsDone);
+        await loadTasks({ showSpinner: false });
+      } catch (error) {
+        console.error('No se pudo actualizar la subtarea', error);
+        setTasksError('No se pudo actualizar la subtarea.');
       }
-      return task;
-    }));
+    })();
   };
 
   const handleEditSubtask = (taskId: string, subtaskId: string, newDescription: string) => {
-    setTasks(prevTasks => prevTasks.map(task => {
-      if (task.id === taskId && task.subtasks) {
-        const updatedSubtasks = findAndModifySubtasks(
-          task.subtasks,
-          subtaskId,
-          st => ({ ...st, description: newDescription })
-        );
-        return { ...task, subtasks: updatedSubtasks };
+    void (async () => {
+      try {
+        await taskRepository.updateSubtask(subtaskId, newDescription);
+        await loadTasks({ showSpinner: false });
+      } catch (error) {
+        console.error('No se pudo editar la subtarea', error);
+        setTasksError('No se pudo editar la subtarea.');
       }
-      return task;
-    }));
+    })();
   };
   
   const handleRequestDelete = (details: { taskId: string; subtaskId?: string }) => {
@@ -1023,21 +1042,21 @@ const App: React.FC = () => {
 
     const { taskId, subtaskId } = deleteConfirmation;
 
-    if (subtaskId) {
-      // Delete a subtask
-      setTasks(prevTasks => prevTasks.map(task => {
-        if (task.id === taskId && task.subtasks) {
-          const updatedSubtasks = findAndFilterSubtasks(task.subtasks, subtaskId);
-          return { ...task, subtasks: updatedSubtasks };
+    void (async () => {
+      try {
+        if (subtaskId) {
+          await taskRepository.deleteSubtask(taskId, subtaskId);
+        } else {
+          await taskRepository.deleteTask(taskId);
         }
-        return task;
-      }));
-    } else {
-      // Delete a main task
-      setTasks(prevTasks => prevTasks.filter(task => task.id !== taskId));
-    }
-
-    setDeleteConfirmation(null);
+        await loadTasks({ showSpinner: false });
+      } catch (error) {
+        console.error('No se pudo eliminar la tarea o subtarea', error);
+        setTasksError('No se pudo eliminar la tarea o subtarea.');
+      } finally {
+        setDeleteConfirmation(null);
+      }
+    })();
   };
 
   const handleSearchForInfo = async (prompt: string) => {
@@ -1117,19 +1136,15 @@ const App: React.FC = () => {
         const scheduledUpdates = await geminiService.planWeek(pendingTasks);
 
         if (scheduledUpdates && scheduledUpdates.length > 0) {
-            setTasks(currentTasks => {
-                const updatesMap = new Map(scheduledUpdates.map(u => [u.taskId, u.newDueDate]));
-                return currentTasks.map(task => {
-                    if (updatesMap.has(task.id)) {
-                        return { ...task, dueDate: updatesMap.get(task.id) };
-                    }
-                    return task;
-                });
-            });
+            for (const update of scheduledUpdates) {
+              await taskRepository.setTaskDueDate(update.taskId, update.newDueDate);
+            }
+            await loadTasks({ showSpinner: false });
             setViewMode('calendar');
         }
     } catch (error) {
         console.error("Error planning week:", error);
+        setTasksError('No se pudo planificar la semana.');
     } finally {
         setIsPlanningWeek(false);
     }
@@ -1205,7 +1220,13 @@ const App: React.FC = () => {
       
       <main className="flex-1 overflow-y-auto p-4 pb-32 space-y-6">
         <Dashboard tasks={tasks} onTaskClick={setMaximizedTaskId} />
-        
+
+        {tasksError && (
+          <div className="p-3 bg-red-900/40 border border-red-700/60 text-red-200 rounded-lg">
+            {tasksError}
+          </div>
+        )}
+
         {suggestions.length > 0 && (
           <div className="p-3 bg-gray-800 rounded-xl border border-gray-700">
             <h2 className="text-sm font-semibold text-indigo-300 mb-2 flex items-center gap-2"><BrainIcon className="w-4 h-4" /> Sugerencias para ti</h2>
@@ -1222,96 +1243,105 @@ const App: React.FC = () => {
           </div>
         )}
         
-        <div className="flex justify-between items-center">
-            <h2 className="text-xl font-semibold text-gray-300">Mis Tareas</h2>
-            <div className="flex items-center gap-2">
-                <button
-                    onClick={handlePlanWeek}
-                    disabled={isPlanningWeek}
-                    className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:bg-purple-900 disabled:cursor-not-allowed transition-colors"
-                    title="Planificar Semana con IA"
-                >
-                    {isPlanningWeek ? <LoadingSpinner /> : <WandIcon className="w-5 h-5" />}
-                    <span className="hidden sm:inline">Planificar Semana</span>
-                </button>
-                <div className="h-6 w-px bg-white/20"></div>
-                <button
-                    onClick={() => setIsFiltersVisible(prev => !prev)}
-                    className={`p-2 rounded-lg ${isFiltersVisible ? 'bg-purple-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                    aria-label="Mostrar/Ocultar filtros"
-                    title="Mostrar/Ocultar filtros"
-                >
-                    <FilterIcon className="w-5 h-5" />
-                </button>
-                <NotificationBell
-                  permission={notificationPermission}
-                  onPermissionChange={handleNotificationPermissionChange}
-                />
-                <button
-                    onClick={() => setViewMode('grid')}
-                    className={`p-2 rounded-lg ${viewMode === 'grid' ? 'bg-purple-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                    aria-label="Vista de cuadrícula"
-                >
-                    <GridViewIcon className="w-5 h-5" />
-                </button>
-                 <button
-                    onClick={() => setViewMode('calendar')}
-                    className={`p-2 rounded-lg ${viewMode === 'calendar' ? 'bg-purple-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                    aria-label="Vista de calendario"
-                >
-                    <CalendarViewIcon className="w-5 h-5" />
-                </button>
+        {areTasksLoading ? (
+          <div className="flex flex-col items-center justify-center py-20 text-gray-300 gap-3">
+            <LoadingSpinner />
+            <span className="text-sm">Cargando tareas...</span>
+          </div>
+        ) : (
+          <>
+            <div className="flex justify-between items-center">
+                <h2 className="text-xl font-semibold text-gray-300">Mis Tareas</h2>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handlePlanWeek}
+                        disabled={isPlanningWeek}
+                        className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:bg-purple-900 disabled:cursor-not-allowed transition-colors"
+                        title="Planificar Semana con IA"
+                    >
+                        {isPlanningWeek ? <LoadingSpinner /> : <WandIcon className="w-5 h-5" />}
+                        <span className="hidden sm:inline">Planificar Semana</span>
+                    </button>
+                    <div className="h-6 w-px bg-white/20"></div>
+                    <button
+                        onClick={() => setIsFiltersVisible(prev => !prev)}
+                        className={`p-2 rounded-lg ${isFiltersVisible ? 'bg-purple-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                        aria-label="Mostrar/Ocultar filtros"
+                        title="Mostrar/Ocultar filtros"
+                    >
+                        <FilterIcon className="w-5 h-5" />
+                    </button>
+                    <NotificationBell
+                      permission={notificationPermission}
+                      onPermissionChange={handleNotificationPermissionChange}
+                    />
+                    <button
+                        onClick={() => setViewMode('grid')}
+                        className={`p-2 rounded-lg ${viewMode === 'grid' ? 'bg-purple-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                        aria-label="Vista de cuadrícula"
+                    >
+                        <GridViewIcon className="w-5 h-5" />
+                    </button>
+                     <button
+                        onClick={() => setViewMode('calendar')}
+                        className={`p-2 rounded-lg ${viewMode === 'calendar' ? 'bg-purple-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                        aria-label="Vista de calendario"
+                    >
+                        <CalendarViewIcon className="w-5 h-5" />
+                    </button>
+                </div>
             </div>
-        </div>
 
-        {isFiltersVisible && <TaskFilters filters={filters} onFilterChange={handleFilterChange} />}
+            {isFiltersVisible && <TaskFilters filters={filters} onFilterChange={handleFilterChange} />}
 
-        {viewMode === 'grid' ? (
-           <>
-            {filteredAndSortedTasks.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" onDragOver={(e) => e.preventDefault()}>
-                {filteredAndSortedTasks.map(task => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    onToggleDone={handleToggleDone}
-                    onEdit={handleOpenEditModal}
-                    onDeleteTask={handleRequestDelete}
-                    onAddDate={handleOpenDatePickerModal}
-                    generatingSubtasksFor={generatingSubtasksFor}
-                    onGenerateSubtasks={handleGenerateAndAddSubtasks}
-                    onAddManualSubtask={handleAddManualSubtask}
-                    onToggleSubtask={handleToggleSubtask}
-                    onRequestDeleteSubtask={handleRequestDelete}
-                    onSearchForInfo={handleSearchForInfo}
-                    onMaximize={setMaximizedTaskId}
-                    onEditSubtask={handleEditSubtask}
-                    onDragStart={handleDragStart}
-                    onDragEnter={handleDragEnter}
-                    onDragEnd={handleDragEnd}
-                    onDrop={handleDrop}
-                    isDragging={draggingTaskId === task.id}
-                    isDraggingOver={dragOverTaskId === task.id}
-                    onSmartAction={handleOpenSmartActionModal}
-                    onSmartActionForSubtask={handleOpenSmartActionModalForSubtask}
-                  />
-                ))}
-              </div>
+            {viewMode === 'grid' ? (
+               <>
+                {filteredAndSortedTasks.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" onDragOver={(e) => e.preventDefault()}>
+                    {filteredAndSortedTasks.map(task => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        generatingSubtasksFor={generatingSubtasksFor}
+                        onToggleDone={handleToggleDone}
+                        onEdit={handleOpenEditModal}
+                        onDeleteTask={handleRequestDelete}
+                        onAddDate={handleOpenDatePickerModal}
+                        onGenerateSubtasks={handleGenerateAndAddSubtasks}
+                        onAddManualSubtask={handleAddManualSubtask}
+                        onToggleSubtask={handleToggleSubtask}
+                        onRequestDeleteSubtask={handleRequestDelete}
+                        onSearchForInfo={handleSearchForInfo}
+                        onMaximize={setMaximizedTaskId}
+                        onEditSubtask={handleEditSubtask}
+                        onDragStart={handleDragStart}
+                        onDragEnter={handleDragEnter}
+                        onDragEnd={handleDragEnd}
+                        onDrop={handleDrop}
+                        isDragging={draggingTaskId === task.id}
+                        isDraggingOver={dragOverTaskId === task.id}
+                        onSmartAction={handleOpenSmartActionModal}
+                        onSmartActionForSubtask={handleOpenSmartActionModalForSubtask}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-10 text-gray-400 bg-gray-800/50 rounded-lg">
+                    <p className="text-lg font-semibold">No se encontraron tareas</p>
+                    <p className="text-sm mt-1">Intenta ajustar la búsqueda o los filtros aplicados.</p>
+                  </div>
+                )}
+              </>
             ) : (
-              <div className="text-center py-10 text-gray-400 bg-gray-800/50 rounded-lg">
-                <p className="text-lg font-semibold">No se encontraron tareas</p>
-                <p className="text-sm mt-1">Intenta ajustar la búsqueda o los filtros aplicados.</p>
-              </div>
+                <CalendarView 
+                    tasks={filteredAndSortedTasks} 
+                    onTaskClick={setMaximizedTaskId} 
+                    onSetTaskDate={handleSetTaskDate}
+                    currentDate={currentCalendarDate}
+                    setCurrentDate={setCurrentCalendarDate}
+                />
             )}
           </>
-        ) : (
-            <CalendarView 
-                tasks={filteredAndSortedTasks} 
-                onTaskClick={setMaximizedTaskId} 
-                onSetTaskDate={handleSetTaskDate}
-                currentDate={currentCalendarDate}
-                setCurrentDate={setCurrentCalendarDate}
-            />
         )}
 
         {chatHistory.length > 0 && <hr className="border-gray-700" />}
