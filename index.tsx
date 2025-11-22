@@ -68,7 +68,7 @@ const callAI = async (params: { prompt: string, image?: string, systemInstructio
   // Nota: process.env no está disponible en el navegador en tiempo de ejecución.
   // Si necesitas desarrollo local, usa import.meta.env.VITE_API_KEY con Vite
   // Por ahora, siempre usamos el modo producción (serverless proxy)
-  
+
   // 1. Modo Desarrollo Local (comentado - no funciona en navegador)
   // if (import.meta.env?.VITE_API_KEY) {
   //   try {
@@ -125,11 +125,11 @@ const callAI = async (params: { prompt: string, image?: string, systemInstructio
     console.error("Error parsing API response:", parseError);
     throw new Error('Error al procesar la respuesta del servidor');
   }
-  
+
   if (!data || typeof data.text !== 'string') {
     throw new Error('Respuesta inválida del servidor');
   }
-  
+
   return data.text;
 };
 
@@ -909,7 +909,7 @@ const App = () => {
       const targetElement = document.elementFromPoint(e.clientX, e.clientY);
       const targetNodeElement = targetElement?.closest('[data-node-id]');
 
-        if (targetNodeElement) {
+      if (targetNodeElement) {
         const targetId = targetNodeElement.getAttribute('data-node-id');
         if (targetId && targetId !== tempConnection.sourceId) {
           // Prevenir conexiones duplicadas y ciclos
@@ -931,7 +931,7 @@ const App = () => {
               };
               return checkCycle(targetId);
             };
-            
+
             if (!wouldCreateCycle(tempConnection.sourceId, targetId)) {
               saveSnapshot();
               setConnections(prev => {
@@ -1224,13 +1224,13 @@ const App = () => {
       </div>
 
       {/* INPUT BAR (MIC & CAMERA) */}
-      <div 
-        className={`absolute left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[55]' : 'bottom-8 z-[100]'}`}
-        style={{ 
-          bottom: inspectorNodeId 
-            ? 'calc(85vh + 1rem)' 
-            : 'calc(2rem + env(safe-area-inset-bottom, 0.5rem))',
-          zIndex: inspectorNodeId ? 55 : 100
+      <div
+        className={`absolute left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[60]' : 'bottom-8 z-[100]'}`}
+        style={{
+          bottom: inspectorNodeId
+            ? 'calc(85vh + 1rem)'
+            : 'calc(2rem + env(safe-area-inset-bottom, 20px))',
+          zIndex: inspectorNodeId ? 60 : 100
         }}
       >
 
@@ -1283,8 +1283,8 @@ const App = () => {
       {/* FLOATING CHAT BUTTON */}
       <button
         onClick={() => setIsChatOpen(true)}
-        className={`absolute right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[55]' : 'bottom-8 z-[100]'}`}
-        style={{ bottom: inspectorNodeId ? 'calc(85vh + 1rem)' : 'calc(2rem + env(safe-area-inset-bottom, 0.5rem))' }}
+        className={`absolute right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[60]' : 'bottom-8 z-[100]'}`}
+        style={{ bottom: inspectorNodeId ? 'calc(85vh + 1rem)' : 'calc(2rem + env(safe-area-inset-bottom, 20px))' }}
       >
         <MessageCircle className="w-7 h-7" />
       </button>
@@ -1437,8 +1437,8 @@ const App = () => {
         />
       )}
 
-      {/* MINIMAP */}
-      <div className="absolute bottom-8 left-8 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-lg p-2 w-48 h-32 overflow-hidden pointer-events-none hidden sm:block opacity-80 hover:opacity-100 transition-opacity">
+      {/* MINIMAP - Hidden on mobile by default, visible on larger screens */}
+      <div className="absolute bottom-8 left-8 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-lg p-2 w-48 h-32 overflow-hidden pointer-events-none hidden md:block opacity-80 hover:opacity-100 transition-opacity">
         <div className="relative w-full h-full bg-slate-50/50 rounded-lg">
           {nodes.map(n => {
             // Simple projection: Map -2500..2500 to 0..100%
@@ -1496,7 +1496,7 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const files = Array.from(e.target.files);
+      const files = Array.from(e.target.files) as File[];
       const newAttachments: AttachmentFile[] = [];
       const errors: string[] = [];
 
@@ -1560,12 +1560,12 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
 
       // Agregar archivos exitosos
       if (newAttachments.length > 0) {
-        onUpdate({ 
-          ...node, 
-          attachments: [...(node.attachments || []), ...newAttachments] 
+        onUpdate({
+          ...node,
+          attachments: [...(node.attachments || []), ...newAttachments]
         });
       }
-      
+
       // Reset input
       e.target.value = '';
     }
@@ -1580,8 +1580,8 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
       }
 
       // Extraer la parte base64 (después de la coma)
-      const base64Data = attachment.data.includes(',') 
-        ? attachment.data.split(',')[1] 
+      const base64Data = attachment.data.includes(',')
+        ? attachment.data.split(',')[1]
         : attachment.data;
 
       if (!base64Data) {
@@ -1597,7 +1597,7 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
       }
       const byteArray = new Uint8Array(byteNumbers);
       const blob = new Blob([byteArray], { type: attachment.type || 'application/octet-stream' });
-      
+
       // Crear URL y descargar
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -1606,7 +1606,7 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
       link.style.display = 'none';
       document.body.appendChild(link);
       link.click();
-      
+
       // Limpiar
       setTimeout(() => {
         document.body.removeChild(link);
@@ -1619,9 +1619,9 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
   };
 
   const handleFileDelete = (attachmentId: string) => {
-    onUpdate({ 
-      ...node, 
-      attachments: (node.attachments || []).filter(a => a.id !== attachmentId) 
+    onUpdate({
+      ...node,
+      attachments: (node.attachments || []).filter(a => a.id !== attachmentId)
     });
   };
 
@@ -1777,14 +1777,14 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
                             <div className="text-[10px] text-slate-500">{formatFileSize(attachment.size)}</div>
                           </div>
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
+                            <button
                               onClick={() => handleFileDownload(attachment)}
                               className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                               title="Descargar"
                             >
                               <Download className="w-4 h-4" />
                             </button>
-                            <button 
+                            <button
                               onClick={() => handleFileDelete(attachment.id)}
                               className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
                               title="Eliminar"
@@ -1803,12 +1803,12 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
               <label className="w-full py-3 flex items-center justify-center gap-2 text-sm text-slate-500 border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 active:bg-slate-100 transition-colors cursor-pointer">
                 <FileText className="w-4 h-4" />
                 <span>Subir archivo (PDF, imágenes, etc.)</span>
-                <input 
-                  type="file" 
-                  multiple 
+                <input
+                  type="file"
+                  multiple
                   accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.zip,.rar"
-                  className="hidden" 
-                  onChange={handleFileUpload} 
+                  className="hidden"
+                  onChange={handleFileUpload}
                 />
               </label>
             </div>
