@@ -1,0 +1,7 @@
+{
+  "description": "Idea Node System powered by Gemini",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "name": "IdeaVerse"
+}
