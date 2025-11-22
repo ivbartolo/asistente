@@ -1083,7 +1083,7 @@ const App = () => {
   };
 
   return (
-    <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
+    <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none">
 
       {/* SIDEBAR MENU */}
       <div
@@ -1232,6 +1232,7 @@ const App = () => {
           bottom: inspectorNodeId
             ? 'calc(85vh + 1rem)'
             : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
+          transform: 'translateZ(0)',
         }}
       >
 
@@ -1291,6 +1292,7 @@ const App = () => {
           bottom: inspectorNodeId
             ? 'calc(85vh + 1rem)'
             : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
+          transform: 'translateZ(0)',
         }}
       >
         <MessageCircle className="w-7 h-7" />
