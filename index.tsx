@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Mic, Search, Plus, Calendar, X, Link as LinkIcon, DollarSign, FileText, BrainCircuit, MoreHorizontal, Layout, Share2, Info, Menu, CornerDownRight, Disc, ArrowLeft, Sparkles, Camera, Undo, Redo, Image as ImageIcon, MessageCircle, Send, CheckSquare, Square, Download, FileType } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { db, saveViewport, saveSelectedNode, getMetadata } from './db';
-import { IdeaNode, Connection, Viewport, ChatMessage, CheckListItem, NodeType, NodeStatus } from './types';
+import { IdeaNode, Connection, Viewport, ChatMessage, CheckListItem, NodeType, NodeStatus, AttachmentFile } from './types';
 
 // --- TYPES ---
 // (Imported from types.ts)
@@ -205,7 +205,12 @@ const App = () => {
         const meta = await getMetadata();
 
         if (storedNodes.length > 0) {
-          setNodes(storedNodes);
+          // Asegurar compatibilidad: inicializar attachments si no existe
+          const normalizedNodes = storedNodes.map(node => ({
+            ...node,
+            attachments: node.attachments || []
+          }));
+          setNodes(normalizedNodes);
           setConnections(storedConnections);
           if (meta.viewport) setViewport(meta.viewport);
           if (meta.selectedNodeId) setSelectedNodeId(meta.selectedNodeId);
@@ -621,6 +626,7 @@ const App = () => {
       cost: 0,
       links: [],
       images: [],
+      attachments: [],
       checklist: [],
       type: 'text',
       status: 'draft',
@@ -718,6 +724,7 @@ const App = () => {
         cost: data.cost || 0,
         links: data.links || [],
         images: isImage ? [(input as any).image] : [],
+        attachments: [],
         checklist: (data.checklist || []).map((item: any, i: number) => ({
           id: `task-${Date.now()}-${i}`,
           text: item.text,
@@ -1394,6 +1401,7 @@ const App = () => {
                   links: [],
                   checklist: [],
                   images: [],
+                  attachments: [],
                   type: 'text',
                   status: 'draft',
                   createdAt: Date.now()
@@ -1475,6 +1483,150 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const files = Array.from(e.target.files);
+      const newAttachments: AttachmentFile[] = [];
+      const errors: string[] = [];
+
+      for (const file of files) {
+        // Validar que el archivo tenga nombre
+        if (!file.name || file.name.trim().length === 0) {
+          errors.push("Un archivo no tiene nombre válido");
+          continue;
+        }
+
+        // Limitar tamaño a 10MB por archivo
+        if (file.size > 10 * 1024 * 1024) {
+          errors.push(`"${file.name}" es demasiado grande (máximo 10MB)`);
+          continue;
+        }
+
+        // Validar que el archivo no esté vacío
+        if (file.size === 0) {
+          errors.push(`"${file.name}" está vacío`);
+          continue;
+        }
+
+        try {
+          const reader = new FileReader();
+          await new Promise<void>((resolve, reject) => {
+            reader.onloadend = () => {
+              try {
+                const base64 = reader.result as string;
+                if (!base64 || !base64.startsWith('data:')) {
+                  reject(new Error(`Error al leer el archivo "${file.name}"`));
+                  return;
+                }
+
+                const attachment: AttachmentFile = {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+                  name: file.name,
+                  type: file.type || 'application/octet-stream', // Tipo por defecto si no está disponible
+                  size: file.size,
+                  data: base64,
+                  uploadedAt: Date.now()
+                };
+                newAttachments.push(attachment);
+                resolve();
+              } catch (error) {
+                reject(error);
+              }
+            };
+            reader.onerror = () => reject(new Error(`Error al leer el archivo "${file.name}"`));
+            reader.readAsDataURL(file);
+          });
+        } catch (error) {
+          console.error(`Error procesando archivo "${file.name}":`, error);
+          errors.push(`Error al procesar "${file.name}": ${error instanceof Error ? error.message : 'Error desconocido'}`);
+        }
+      }
+
+      // Mostrar errores si los hay
+      if (errors.length > 0) {
+        alert(`Errores al subir archivos:\n${errors.join('\n')}`);
+      }
+
+      // Agregar archivos exitosos
+      if (newAttachments.length > 0) {
+        onUpdate({ 
+          ...node, 
+          attachments: [...(node.attachments || []), ...newAttachments] 
+        });
+      }
+      
+      // Reset input
+      e.target.value = '';
+    }
+  };
+
+  const handleFileDownload = (attachment: AttachmentFile) => {
+    try {
+      // Validar que el attachment tenga datos
+      if (!attachment.data || attachment.data.trim().length === 0) {
+        alert("El archivo no tiene datos válidos");
+        return;
+      }
+
+      // Extraer la parte base64 (después de la coma)
+      const base64Data = attachment.data.includes(',') 
+        ? attachment.data.split(',')[1] 
+        : attachment.data;
+
+      if (!base64Data) {
+        alert("Formato de archivo inválido");
+        return;
+      }
+
+      // Decodificar base64
+      const byteCharacters = atob(base64Data);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: attachment.type || 'application/octet-stream' });
+      
+      // Crear URL y descargar
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = attachment.name || 'archivo';
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      
+      // Limpiar
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 100);
+    } catch (error) {
+      console.error("Error downloading file:", error);
+      alert(`Error al descargar el archivo: ${error instanceof Error ? error.message : 'Error desconocido'}`);
+    }
+  };
+
+  const handleFileDelete = (attachmentId: string) => {
+    onUpdate({ 
+      ...node, 
+      attachments: (node.attachments || []).filter(a => a.id !== attachmentId) 
+    });
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  const getFileIcon = (mimeType: string) => {
+    if (mimeType.includes('pdf')) return FileText;
+    if (mimeType.includes('image')) return ImageIcon;
+    if (mimeType.includes('word') || mimeType.includes('document')) return FileText;
+    return FileType;
   };
 
   // Checklist handlers
@@ -1590,13 +1742,66 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
           <div>
             <label className="flex items-center gap-2 text-[10px] font-bold text-slate-400 mb-3 uppercase"><LinkIcon className="w-3 h-3" />Enlaces y Recursos</label>
             <div className="space-y-3">
+              {/* Enlaces URL */}
               {node.links.map((link, i) => (
                 <div key={i} className="flex gap-2 items-center">
-                  <input value={link} onChange={(e) => { const newLinks = [...node.links]; newLinks[i] = e.target.value; onUpdate({ ...node, links: newLinks }); }} className="flex-1 bg-white text-sm p-3 rounded-xl text-blue-600 border border-slate-200 shadow-sm" />
-                  <button onClick={() => { const newLinks = node.links.filter((_, idx) => idx !== i); onUpdate({ ...node, links: newLinks }); }} className="w-10 h-10 flex items-center justify-center bg-red-50 text-red-400 rounded-xl"><X className="w-5 h-5" /></button>
+                  <input value={link} onChange={(e) => { const newLinks = [...node.links]; newLinks[i] = e.target.value; onUpdate({ ...node, links: newLinks }); }} className="flex-1 bg-white text-sm p-3 rounded-xl text-blue-600 border border-slate-200 shadow-sm" placeholder="https://..." />
+                  <button onClick={() => { const newLinks = node.links.filter((_, idx) => idx !== i); onUpdate({ ...node, links: newLinks }); }} className="w-10 h-10 flex items-center justify-center bg-red-50 text-red-400 rounded-xl hover:bg-red-100 transition-colors"><X className="w-5 h-5" /></button>
                 </div>
               ))}
               <button onClick={() => onUpdate({ ...node, links: [...node.links, ""] })} className="w-full py-3 flex items-center justify-center gap-2 text-sm text-slate-500 border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 active:bg-slate-100 transition-colors"><Plus className="w-4 h-4" /> Añadir enlace</button>
+
+              {/* Archivos adjuntos */}
+              {node.attachments && node.attachments.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-slate-200">
+                  <label className="flex items-center gap-2 text-[10px] font-bold text-slate-400 mb-3 uppercase"><FileText className="w-3 h-3" />Archivos Adjuntos</label>
+                  <div className="space-y-2">
+                    {node.attachments.map((attachment) => {
+                      const FileIcon = getFileIcon(attachment.type);
+                      return (
+                        <div key={attachment.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 group hover:bg-slate-100 transition-colors">
+                          <div className="flex-shrink-0 w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-slate-200">
+                            <FileIcon className="w-5 h-5 text-slate-600" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-slate-800 truncate">{attachment.name}</div>
+                            <div className="text-[10px] text-slate-500">{formatFileSize(attachment.size)}</div>
+                          </div>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button 
+                              onClick={() => handleFileDownload(attachment)}
+                              className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                              title="Descargar"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => handleFileDelete(attachment.id)}
+                              className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                              title="Eliminar"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Botón para subir archivos */}
+              <label className="w-full py-3 flex items-center justify-center gap-2 text-sm text-slate-500 border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 active:bg-slate-100 transition-colors cursor-pointer">
+                <FileText className="w-4 h-4" />
+                <span>Subir archivo (PDF, imágenes, etc.)</span>
+                <input 
+                  type="file" 
+                  multiple 
+                  accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.zip,.rar"
+                  className="hidden" 
+                  onChange={handleFileUpload} 
+                />
+              </label>
             </div>
           </div>
         </div>

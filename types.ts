@@ -7,6 +7,15 @@ export interface CheckListItem {
     done: boolean;
 }
 
+export interface AttachmentFile {
+    id: string;
+    name: string;
+    type: string; // MIME type (ej: 'application/pdf', 'image/png')
+    size: number; // Tamaño en bytes
+    data: string; // Base64 encoded
+    uploadedAt: number; // Timestamp
+}
+
 export interface IdeaNode {
     id: string;
     x: number;
@@ -18,6 +27,7 @@ export interface IdeaNode {
     cost: number;
     links: string[];
     images: string[];
+    attachments: AttachmentFile[]; // Archivos adjuntos (PDF, etc.)
     checklist: CheckListItem[];
     type: NodeType;
     status: NodeStatus;
