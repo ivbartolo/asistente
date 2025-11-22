@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import './index.css';
 import { createRoot } from 'react-dom/client';
 import { Mic, Search, Plus, Calendar, X, Link as LinkIcon, DollarSign, FileText, BrainCircuit, MoreHorizontal, Layout, Share2, Info, Menu, CornerDownRight, Disc, ArrowLeft, Sparkles, Camera, Undo, Redo, Image as ImageIcon, MessageCircle, Send, CheckSquare, Square, Download, FileType } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -1225,9 +1226,8 @@ const App = () => {
 
       {/* INPUT BAR (MIC & CAMERA) */}
       <div
-        className={`fixed left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${
-          inspectorNodeId ? 'z-[60]' : 'z-[100]'
-        }`}
+        className={`fixed left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
+          }`}
         style={{
           bottom: inspectorNodeId
             ? 'calc(85vh + 1rem)'
@@ -1285,9 +1285,8 @@ const App = () => {
       {/* FLOATING CHAT BUTTON */}
       <button
         onClick={() => setIsChatOpen(true)}
-        className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${
-          inspectorNodeId ? 'z-[60]' : 'z-[100]'
-        }`}
+        className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
+          }`}
         style={{
           bottom: inspectorNodeId
             ? 'calc(85vh + 1rem)'
