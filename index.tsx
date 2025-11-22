@@ -1225,12 +1225,13 @@ const App = () => {
 
       {/* INPUT BAR (MIC & CAMERA) */}
       <div
-        className={`absolute left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[60]' : 'bottom-8 z-[100]'}`}
+        className={`fixed left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${
+          inspectorNodeId ? 'z-[60]' : 'z-[100]'
+        }`}
         style={{
           bottom: inspectorNodeId
             ? 'calc(85vh + 1rem)'
-            : 'calc(2rem + env(safe-area-inset-bottom, 20px))',
-          zIndex: inspectorNodeId ? 60 : 100
+            : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
         }}
       >
 
@@ -1283,8 +1284,14 @@ const App = () => {
       {/* FLOATING CHAT BUTTON */}
       <button
         onClick={() => setIsChatOpen(true)}
-        className={`absolute right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[60]' : 'bottom-8 z-[100]'}`}
-        style={{ bottom: inspectorNodeId ? 'calc(85vh + 1rem)' : 'calc(2rem + env(safe-area-inset-bottom, 20px))' }}
+        className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${
+          inspectorNodeId ? 'z-[60]' : 'z-[100]'
+        }`}
+        style={{
+          bottom: inspectorNodeId
+            ? 'calc(85vh + 1rem)'
+            : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
+        }}
       >
         <MessageCircle className="w-7 h-7" />
       </button>
