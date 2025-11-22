@@ -36,7 +36,8 @@ function apiPlugin() {
               }
 
               // Obtener API Key desde variables de entorno (cargadas por Vite)
-              const apiKey = env.GOOGLE_API_KEY || env.API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY;
+              // Buscar en este orden: GOOGLE_API_KEY, API_KEY, VITE_GEMINI_API_KEY, GEMINI_API_KEY
+              const apiKey = env.GOOGLE_API_KEY || env.API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
 
               if (!apiKey) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
