@@ -8,6 +8,29 @@ This contains everything you need to run your app locally.
 
 View your app in AI Studio: https://ai.studio/apps/drive/1bS88iV9DYBD0bv6XBK5R1ToztgY592iI
 
+## Solución de Problemas
+
+### Error: "cdn.tailwindcss.com should not be used in production"
+**Solución**: Este error aparece si hay una versión en caché del navegador. Para solucionarlo:
+1. Limpia la caché del navegador (Ctrl+Shift+Delete o Cmd+Shift+Delete)
+2. O haz un hard refresh (Ctrl+F5 o Cmd+Shift+R)
+3. La aplicación ya usa Tailwind CSS vía PostCSS, no el CDN
+
+### Error 404: /index.css
+**Solución**: Este error puede aparecer en desarrollo. El CSS se procesa correctamente en producción. Si persiste:
+1. Asegúrate de que `index.css` existe en la raíz del proyecto
+2. Verifica que `import './index.css'` esté en `index.tsx`
+3. Reinicia el servidor de desarrollo: `npm run dev`
+
+### Error 500: /api/generate
+**Solución**: Este error indica que la API Key no está configurada. Ver sección "Configuración de API Key" más abajo.
+
+### Error: Speech Recognition Network
+**Solución**: Este error ocurre cuando el reconocimiento de voz no puede conectarse. Asegúrate de:
+1. Tener conexión a internet
+2. Permitir el acceso al micrófono en tu navegador
+3. Usar HTTPS (requerido para Speech Recognition API)
+
 ## Configuración de API Key
 
 Esta aplicación requiere una **API Key de Google Gemini** para funcionar.
