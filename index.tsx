@@ -1083,7 +1083,7 @@ const App = () => {
   };
 
   return (
-    <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none">
+    <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
 
       {/* SIDEBAR MENU */}
       <div
@@ -1224,7 +1224,15 @@ const App = () => {
       </div>
 
       {/* INPUT BAR (MIC & CAMERA) */}
-      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 pointer-events-none z-40 flex items-end gap-4">
+      <div 
+        className={`absolute left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[55]' : 'bottom-8 z-[100]'}`}
+        style={{ 
+          bottom: inspectorNodeId 
+            ? 'calc(85vh + 1rem)' 
+            : 'calc(2rem + env(safe-area-inset-bottom, 0.5rem))',
+          zIndex: inspectorNodeId ? 55 : 100
+        }}
+      >
 
         {/* Camera Button */}
         <div className="pointer-events-auto relative">
@@ -1275,7 +1283,8 @@ const App = () => {
       {/* FLOATING CHAT BUTTON */}
       <button
         onClick={() => setIsChatOpen(true)}
-        className="absolute bottom-8 right-6 z-40 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all"
+        className={`absolute right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'bottom-[calc(85vh+1rem)] z-[55]' : 'bottom-8 z-[100]'}`}
+        style={{ bottom: inspectorNodeId ? 'calc(85vh + 1rem)' : 'calc(2rem + env(safe-area-inset-bottom, 0.5rem))' }}
       >
         <MessageCircle className="w-7 h-7" />
       </button>
@@ -1652,7 +1661,7 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
   };
 
   return (
-    <div className="fixed inset-x-0 bottom-0 h-[85vh] bg-white rounded-t-3xl shadow-[0_-10px_40px_rgba(0,0,0,0.1)] z-50 flex flex-col animate-in slide-in-from-bottom duration-300 touch-auto">
+    <div className="fixed inset-x-0 bottom-0 h-[85vh] bg-white rounded-t-3xl shadow-[0_-10px_40px_rgba(0,0,0,0.1)] z-50 flex flex-col animate-in slide-in-from-bottom duration-300 touch-auto" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
       <div className="w-full flex justify-center pt-3 pb-1" onClick={onClose}>
         <div className="w-12 h-1.5 bg-slate-200 rounded-full" />
       </div>
