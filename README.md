@@ -46,15 +46,25 @@ Esta aplicación requiere una **API Key de Google Gemini** para funcionar.
 
 #### Para desarrollo local:
 
-1. Crea un archivo `.env.local` en la raíz del proyecto:
+1. Copia el archivo de ejemplo:
+```bash
+cp .env.example .env.local
+```
+
+2. Edita `.env.local` y agrega tu API Key:
 ```bash
 GOOGLE_API_KEY=tu_api_key_aqui
 ```
 
-2. O alternativamente puedes usar:
+3. O alternativamente puedes usar:
 ```bash
 API_KEY=tu_api_key_aqui
 ```
+
+**Importante**: 
+- El archivo `.env.local` está en `.gitignore` y no se subirá al repositorio
+- Reinicia el servidor de desarrollo (`npm run dev`) después de crear o modificar `.env.local`
+- Las variables de entorno se cargan automáticamente por Vite
 
 #### Para producción (Vercel/Netlify):
 
