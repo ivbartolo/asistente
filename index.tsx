@@ -764,25 +764,9 @@ const App = () => {
       }
       wakeSimulation();
 
-    } catch (e: any) {
-      console.error("[ProcessInput] Error procesando idea:", e);
-      let errorMessage = "Error procesando la idea. ";
-      
-      if (e.message) {
-        if (e.message.includes('API') || e.message.includes('servidor')) {
-          errorMessage += "No se pudo conectar con el servidor de IA. Verifica tu conexión a internet.";
-        } else if (e.message.includes('JSON') || e.message.includes('parsear')) {
-          errorMessage += "La respuesta de la IA no es válida. Intenta reformular tu idea.";
-        } else if (e.message.includes('API Key') || e.message.includes('401')) {
-          errorMessage += "Error de autenticación. Verifica la configuración de la API Key.";
-        } else {
-          errorMessage += e.message;
-        }
-      } else {
-        errorMessage += "Intenta de nuevo.";
-      }
-      
-      alert(errorMessage);
+    } catch (e) {
+      console.error("Error processing AI:", e);
+      alert("Error procesando la idea. Intenta de nuevo.");
     } finally {
       setIsProcessing(false);
     }
@@ -795,73 +779,14 @@ const App = () => {
       return;
     }
 
-    // Verificar que estamos en HTTPS (requerido para Speech Recognition)
-    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      const useHttps = confirm(
-        "El reconocimiento de voz requiere HTTPS. " +
-        "¿Quieres escribir tu idea manualmente en su lugar?"
-      );
-      if (useHttps) {
-        const text = prompt("Escribe tu idea:");
-        if (text) processInput(text);
-      }
-      return;
-    }
-
-    // Verificar conexión a internet
-    if (!navigator.onLine) {
-      const writeManually = confirm(
-        "No hay conexión a internet. El reconocimiento de voz requiere conexión. " +
-        "¿Quieres escribir tu idea manualmente?"
-      );
-      if (writeManually) {
-        const text = prompt("Escribe tu idea:");
-        if (text) processInput(text);
-      }
-      return;
-    }
-
     if (isRecording) {
       setIsRecording(false);
       stopAudioAnalysis();
-      // Detener reconocimiento si está activo
-      if ((window as any).activeRecognition) {
-        try {
-          (window as any).activeRecognition.stop();
-        } catch (e) {
-          console.log("Error al detener reconocimiento:", e);
-        }
-        (window as any).activeRecognition = null;
-      }
       return;
     }
 
     setIsRecording(true);
-    
-    // Iniciar análisis de audio (esto también verifica permisos)
-    try {
-      await startAudioAnalysis();
-    } catch (audioError: any) {
-      console.error("[Speech] Error al iniciar análisis de audio:", audioError);
-      setIsRecording(false);
-      let errorMessage = "No se pudo acceder al micrófono. ";
-      if (audioError.name === 'NotAllowedError' || audioError.name === 'PermissionDeniedError') {
-        errorMessage += "Por favor, permite el acceso al micrófono en la configuración del navegador.";
-      } else if (audioError.name === 'NotFoundError') {
-        errorMessage += "No se encontró ningún micrófono conectado.";
-      } else if (audioError.name === 'NotReadableError') {
-        errorMessage += "El micrófono está siendo usado por otra aplicación.";
-      } else {
-        errorMessage += `Error: ${audioError.message || 'Error desconocido'}`;
-      }
-      
-      const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
-      if (writeManually) {
-        const text = prompt("Escribe tu idea:");
-        if (text) processInput(text);
-      }
-      return;
-    }
+    await startAudioAnalysis();
 
     // @ts-ignore
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -869,176 +794,21 @@ const App = () => {
     recognition.lang = 'es-ES';
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
-    recognition.continuous = false; // No reiniciar automáticamente
-    
-    // Agregar listener para cambios en la conexión
-    const handleOnline = () => {
-      console.log("[Speech] Conexión restaurada");
-    };
-    
-    const handleOffline = () => {
-      console.warn("[Speech] Conexión perdida durante la grabación");
-      if (isRecording && (window as any).activeRecognition) {
-        try {
-          (window as any).activeRecognition.stop();
-        } catch (e) {
-          console.log("Error al detener reconocimiento por pérdida de conexión:", e);
-        }
-        setIsRecording(false);
-        stopAudioAnalysis();
-        (window as any).activeRecognition = null;
-        alert("Se perdió la conexión a internet. El reconocimiento de voz requiere conexión activa.");
-      }
-    };
-    
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    
-    // Limpiar listeners cuando termine
-    const cleanup = () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-
-    // Guardar referencia global para poder detenerla si es necesario
-    (window as any).activeRecognition = recognition;
-
-    let hasResult = false;
 
     recognition.onresult = (event: any) => {
-      console.log("[Speech] Resultado recibido:", event);
-      if (event.results && event.results.length > 0 && event.results[0].length > 0) {
-        const text = event.results[0][0].transcript;
-        console.log("[Speech] Texto transcrito:", text);
-        hasResult = true;
-        cleanup(); // Limpiar listeners
-        setIsRecording(false);
-        stopAudioAnalysis();
-        (window as any).activeRecognition = null;
-        if (text && text.trim().length > 0) {
-          processInput(text.trim());
-        } else {
-          console.warn("[Speech] Texto vacío recibido");
-          alert("No se detectó ningún texto. Por favor, intenta de nuevo.");
-        }
-      }
+      const text = event.results[0][0].transcript;
+      setIsRecording(false);
+      stopAudioAnalysis();
+      processInput(text);
     };
 
     recognition.onerror = (event: any) => {
-      console.error("[Speech] Error:", event.error, event);
-      (window as any).lastSpeechError = event.error;
-      hasResult = false;
-      cleanup(); // Limpiar listeners
+      console.error("Speech error", event.error);
       setIsRecording(false);
       stopAudioAnalysis();
-      (window as any).activeRecognition = null;
-
-      let errorMessage = "Error en el reconocimiento de voz. ";
-      switch (event.error) {
-        case 'no-speech':
-          errorMessage = "No se detectó ningún audio. Por favor, habla más cerca del micrófono.";
-          break;
-        case 'audio-capture':
-          errorMessage = "No se pudo capturar audio. Verifica que el micrófono esté conectado y funcionando.";
-          break;
-        case 'not-allowed':
-          errorMessage = "Permisos de micrófono denegados. Por favor, permite el acceso al micrófono.";
-          break;
-        case 'network':
-          errorMessage = "Error de conexión a internet. El reconocimiento de voz requiere conexión activa.\n\n";
-          errorMessage += "Por favor:\n";
-          errorMessage += "1. Verifica tu conexión a internet\n";
-          errorMessage += "2. Asegúrate de estar en HTTPS (requerido para reconocimiento de voz)\n";
-          errorMessage += "3. Intenta de nuevo en unos momentos";
-          
-          const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
-          if (writeManually) {
-            const text = prompt("Escribe tu idea:");
-            if (text) processInput(text);
-          }
-          return;
-        case 'aborted':
-          // Ignorar errores de aborto (usuario canceló)
-          console.log("[Speech] Reconocimiento abortado por el usuario");
-          return;
-        case 'service-not-allowed':
-          errorMessage = "El servicio de reconocimiento de voz no está disponible.";
-          break;
-        default:
-          errorMessage += `Error: ${event.error || 'Error desconocido'}`;
-      }
-      alert(errorMessage);
     };
 
-    recognition.onend = () => {
-      console.log("[Speech] Reconocimiento finalizado. HasResult:", hasResult);
-      cleanup(); // Limpiar listeners
-      setIsRecording(false);
-      stopAudioAnalysis();
-      (window as any).activeRecognition = null;
-      
-      // Si terminó sin resultado y no fue por un error, informar al usuario
-      if (!hasResult) {
-        // Solo mostrar mensaje si no hay un error previo (para evitar mensajes duplicados)
-        const lastError = (window as any).lastSpeechError;
-        if (!lastError || lastError !== 'no-speech') {
-          // No mostrar alerta aquí, ya que onerror maneja los casos importantes
-          console.log("[Speech] Reconocimiento terminó sin resultado");
-        }
-      }
-    };
-
-    recognition.onspeechstart = () => {
-      console.log("[Speech] Inicio de habla detectado");
-    };
-
-    recognition.onaudiostart = () => {
-      console.log("[Speech] Audio capturado");
-    };
-
-    recognition.onsoundstart = () => {
-      console.log("[Speech] Sonido detectado");
-    };
-
-    recognition.onnomatch = () => {
-      console.warn("[Speech] No se encontró coincidencia");
-      hasResult = false;
-      cleanup(); // Limpiar listeners
-      setIsRecording(false);
-      stopAudioAnalysis();
-      (window as any).activeRecognition = null;
-      
-      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      let errorMessage = "No se pudo reconocer el audio. ";
-      
-      if (isMobile) {
-        errorMessage += "\n\nSugerencias para móvil:\n";
-        errorMessage += "• Habla más cerca del micrófono\n";
-        errorMessage += "• Reduce el ruido de fondo\n";
-        errorMessage += "• Habla más claro y pausado\n";
-        errorMessage += "• Verifica que el micrófono no esté bloqueado\n";
-        errorMessage += "• Asegúrate de tener buena conexión a internet";
-      } else {
-        errorMessage += "Por favor, intenta hablar más claro o más cerca del micrófono.";
-      }
-      
-      const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
-      if (writeManually) {
-        const text = prompt("Escribe tu idea:");
-        if (text) processInput(text);
-      }
-    };
-
-    try {
-      console.log("[Speech] Iniciando reconocimiento de voz...");
-      recognition.start();
-    } catch (startError: any) {
-      console.error("[Speech] Error al iniciar reconocimiento:", startError);
-      setIsRecording(false);
-      stopAudioAnalysis();
-      (window as any).activeRecognition = null;
-      alert(`Error al iniciar el reconocimiento de voz: ${startError.message || 'Error desconocido'}`);
-    }
+    recognition.start();
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
