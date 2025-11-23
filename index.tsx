@@ -764,9 +764,25 @@ const App = () => {
       }
       wakeSimulation();
 
-    } catch (e) {
-      console.error("Error processing AI:", e);
-      alert("Error procesando la idea. Intenta de nuevo.");
+    } catch (e: any) {
+      console.error("[ProcessInput] Error procesando idea:", e);
+      let errorMessage = "Error procesando la idea. ";
+      
+      if (e.message) {
+        if (e.message.includes('API') || e.message.includes('servidor')) {
+          errorMessage += "No se pudo conectar con el servidor de IA. Verifica tu conexión a internet.";
+        } else if (e.message.includes('JSON') || e.message.includes('parsear')) {
+          errorMessage += "La respuesta de la IA no es válida. Intenta reformular tu idea.";
+        } else if (e.message.includes('API Key') || e.message.includes('401')) {
+          errorMessage += "Error de autenticación. Verifica la configuración de la API Key.";
+        } else {
+          errorMessage += e.message;
+        }
+      } else {
+        errorMessage += "Intenta de nuevo.";
+      }
+      
+      alert(errorMessage);
     } finally {
       setIsProcessing(false);
     }
@@ -782,11 +798,39 @@ const App = () => {
     if (isRecording) {
       setIsRecording(false);
       stopAudioAnalysis();
+      // Detener reconocimiento si está activo
+      if ((window as any).activeRecognition) {
+        try {
+          (window as any).activeRecognition.stop();
+        } catch (e) {
+          console.log("Error al detener reconocimiento:", e);
+        }
+        (window as any).activeRecognition = null;
+      }
       return;
     }
 
     setIsRecording(true);
-    await startAudioAnalysis();
+    
+    // Iniciar análisis de audio (esto también verifica permisos)
+    try {
+      await startAudioAnalysis();
+    } catch (audioError: any) {
+      console.error("[Speech] Error al iniciar análisis de audio:", audioError);
+      setIsRecording(false);
+      let errorMessage = "No se pudo acceder al micrófono. ";
+      if (audioError.name === 'NotAllowedError' || audioError.name === 'PermissionDeniedError') {
+        errorMessage += "Por favor, permite el acceso al micrófono en la configuración del navegador.";
+      } else if (audioError.name === 'NotFoundError') {
+        errorMessage += "No se encontró ningún micrófono conectado.";
+      } else if (audioError.name === 'NotReadableError') {
+        errorMessage += "El micrófono está siendo usado por otra aplicación.";
+      } else {
+        errorMessage += `Error: ${audioError.message || 'Error desconocido'}`;
+      }
+      alert(errorMessage);
+      return;
+    }
 
     // @ts-ignore
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -794,21 +838,114 @@ const App = () => {
     recognition.lang = 'es-ES';
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
+    recognition.continuous = false; // No reiniciar automáticamente
+
+    // Guardar referencia global para poder detenerla si es necesario
+    (window as any).activeRecognition = recognition;
+
+    let hasResult = false;
 
     recognition.onresult = (event: any) => {
-      const text = event.results[0][0].transcript;
-      setIsRecording(false);
-      stopAudioAnalysis();
-      processInput(text);
+      console.log("[Speech] Resultado recibido:", event);
+      if (event.results && event.results.length > 0 && event.results[0].length > 0) {
+        const text = event.results[0][0].transcript;
+        console.log("[Speech] Texto transcrito:", text);
+        hasResult = true;
+        setIsRecording(false);
+        stopAudioAnalysis();
+        (window as any).activeRecognition = null;
+        if (text && text.trim().length > 0) {
+          processInput(text.trim());
+        } else {
+          console.warn("[Speech] Texto vacío recibido");
+          alert("No se detectó ningún texto. Por favor, intenta de nuevo.");
+        }
+      }
     };
 
     recognition.onerror = (event: any) => {
-      console.error("Speech error", event.error);
+      console.error("[Speech] Error:", event.error, event);
+      (window as any).lastSpeechError = event.error;
+      hasResult = false;
       setIsRecording(false);
       stopAudioAnalysis();
+      (window as any).activeRecognition = null;
+
+      let errorMessage = "Error en el reconocimiento de voz. ";
+      switch (event.error) {
+        case 'no-speech':
+          errorMessage = "No se detectó ningún audio. Por favor, habla más cerca del micrófono.";
+          break;
+        case 'audio-capture':
+          errorMessage = "No se pudo capturar audio. Verifica que el micrófono esté conectado y funcionando.";
+          break;
+        case 'not-allowed':
+          errorMessage = "Permisos de micrófono denegados. Por favor, permite el acceso al micrófono.";
+          break;
+        case 'network':
+          errorMessage = "Error de red. Verifica tu conexión a internet.";
+          break;
+        case 'aborted':
+          // Ignorar errores de aborto (usuario canceló)
+          console.log("[Speech] Reconocimiento abortado por el usuario");
+          return;
+        case 'service-not-allowed':
+          errorMessage = "El servicio de reconocimiento de voz no está disponible.";
+          break;
+        default:
+          errorMessage += `Error: ${event.error || 'Error desconocido'}`;
+      }
+      alert(errorMessage);
     };
 
-    recognition.start();
+    recognition.onend = () => {
+      console.log("[Speech] Reconocimiento finalizado. HasResult:", hasResult);
+      setIsRecording(false);
+      stopAudioAnalysis();
+      (window as any).activeRecognition = null;
+      
+      // Si terminó sin resultado y no fue por un error, informar al usuario
+      if (!hasResult) {
+        // Solo mostrar mensaje si no hay un error previo (para evitar mensajes duplicados)
+        const lastError = (window as any).lastSpeechError;
+        if (!lastError || lastError !== 'no-speech') {
+          // No mostrar alerta aquí, ya que onerror maneja los casos importantes
+          console.log("[Speech] Reconocimiento terminó sin resultado");
+        }
+      }
+    };
+
+    recognition.onspeechstart = () => {
+      console.log("[Speech] Inicio de habla detectado");
+    };
+
+    recognition.onaudiostart = () => {
+      console.log("[Speech] Audio capturado");
+    };
+
+    recognition.onsoundstart = () => {
+      console.log("[Speech] Sonido detectado");
+    };
+
+    recognition.onnomatch = () => {
+      console.warn("[Speech] No se encontró coincidencia");
+      hasResult = false;
+      setIsRecording(false);
+      stopAudioAnalysis();
+      (window as any).activeRecognition = null;
+      alert("No se pudo reconocer el audio. Por favor, intenta hablar más claro o más cerca del micrófono.");
+    };
+
+    try {
+      console.log("[Speech] Iniciando reconocimiento de voz...");
+      recognition.start();
+    } catch (startError: any) {
+      console.error("[Speech] Error al iniciar reconocimiento:", startError);
+      setIsRecording(false);
+      stopAudioAnalysis();
+      (window as any).activeRecognition = null;
+      alert(`Error al iniciar el reconocimiento de voz: ${startError.message || 'Error desconocido'}`);
+    }
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
