@@ -83,7 +83,10 @@ API_KEY=tu_api_key_aqui
    - **Valor:** Tu API Key de Google Gemini
    - **Environment:** Selecciona Production, Preview y Development
    - Haz clic en "Save"
-   - **Importante:** Después de agregar la variable, necesitas hacer un nuevo deploy para que tome efecto
+   - **⚠️ IMPORTANTE:** 
+     - **NO uses `VITE_GEMINI_API_KEY`** en Vercel (solo funciona en desarrollo local)
+     - Las variables `VITE_*` son solo para el frontend, no para funciones serverless
+     - Después de agregar la variable, necesitas hacer un nuevo deploy para que tome efecto
 
 3. **Configuración del Proyecto:**
    - **Framework Preset:** Vite (se detecta automáticamente)
@@ -101,6 +104,54 @@ API_KEY=tu_api_key_aqui
    - Verifica que la aplicación funcione correctamente en la URL de producción
 
 **Nota:** El archivo `vercel.json` ya está configurado en el proyecto para optimizar el despliegue.
+
+### Probar la función /api/generate
+
+#### Opción 1: Script de prueba (Recomendado)
+```bash
+# Probar en local
+node test-api.js
+
+# Probar en producción (reemplaza con tu URL de Vercel)
+node test-api.js https://tu-proyecto.vercel.app
+```
+
+#### Opción 2: Desde el navegador (Consola del navegador)
+Abre la consola del navegador (F12) y ejecuta:
+```javascript
+fetch('/api/generate', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    prompt: 'Responde solo con OK',
+    isJson: false
+  })
+})
+.then(r => r.json())
+.then(data => console.log('✅ Respuesta:', data))
+.catch(err => console.error('❌ Error:', err));
+```
+
+#### Opción 3: Desde Vercel Dashboard
+1. Ve a tu proyecto en Vercel
+2. Haz clic en el deployment más reciente
+3. Ve a la pestaña **"Functions"**
+4. Busca `/api/generate`
+5. Haz clic en "View Function Logs" para ver los logs en tiempo real
+6. Los logs mostrarán si la API Key se encontró y si hay errores
+
+#### Opción 4: Usando curl
+```bash
+# Local
+curl -X POST http://localhost:5173/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Responde solo con OK","isJson":false}'
+
+# Producción (reemplaza con tu URL)
+curl -X POST https://tu-proyecto.vercel.app/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Responde solo con OK","isJson":false}'
+```
 
 ## Run Locally
 

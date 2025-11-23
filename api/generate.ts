@@ -5,12 +5,20 @@ export const config = {
 };
 
 export default async function handler(req: Request) {
+  // Logging inicial para verificar que la función se ejecuta
+  console.log('[API] Función /api/generate llamada');
+  console.log('[API] Método:', req.method);
+  console.log('[API] URL:', req.url);
+  
   if (req.method !== 'POST') {
+    console.log('[API] Método no permitido:', req.method);
     return new Response('Method Not Allowed', { status: 405 });
   }
 
   try {
+    console.log('[API] Parseando body de la petición...');
     const { prompt, image, systemInstruction, isJson } = await req.json();
+    console.log('[API] Body parseado. Prompt length:', prompt?.length || 0);
     
     // Validar que el prompt existe
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
@@ -21,20 +29,34 @@ export default async function handler(req: Request) {
     }
 
     // Buscar API Key en este orden (soporta múltiples nombres)
-    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY;
+    // NOTA: En Vercel Edge Functions, NO usar VITE_* (solo para frontend)
+    console.log('[API] Buscando API Key en variables de entorno...');
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY;
+    
+    // Debug: mostrar qué variables están disponibles (sin mostrar valores)
+    const envKeys = Object.keys(process.env).filter(k => 
+      k.includes('API') || k.includes('KEY') || k.includes('GEMINI') || k.includes('GOOGLE')
+    );
+    console.log('[API] Variables de entorno relacionadas encontradas:', envKeys);
+    console.log('[API] GEMINI_API_KEY existe:', !!process.env.GEMINI_API_KEY);
+    console.log('[API] GOOGLE_API_KEY existe:', !!process.env.GOOGLE_API_KEY);
+    console.log('[API] API_KEY existe:', !!process.env.API_KEY);
 
     if (!apiKey) {
-      console.error('[API] API Key no encontrada. Variables disponibles:', Object.keys(process.env).filter(k => k.includes('API') || k.includes('KEY')));
+      console.error('[API] ❌ API Key NO encontrada');
+      console.error('[API] Variables disponibles con API/KEY:', envKeys);
       return new Response(JSON.stringify({ 
         error: 'Server API Key not configured. Please set GEMINI_API_KEY, GOOGLE_API_KEY, or API_KEY environment variable in Vercel.',
-        hint: 'Check Settings → Environment Variables in your Vercel project'
+        hint: 'Check Settings → Environment Variables in your Vercel project',
+        availableEnvVars: envKeys
       }), { 
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
     
-    console.log('[API] API Key encontrada, longitud:', apiKey.length);
+    console.log('[API] ✅ API Key encontrada, longitud:', apiKey.length);
+    console.log('[API] API Key empieza con:', apiKey.substring(0, 10) + '...');
 
     // Validar formato básico de API key (debe tener al menos 20 caracteres)
     if (apiKey.length < 20) {
@@ -85,6 +107,7 @@ export default async function handler(req: Request) {
         };
     }
 
+    console.log('[API] Enviando petición a Gemini API...');
     const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -92,6 +115,7 @@ export default async function handler(req: Request) {
         },
         body: JSON.stringify(body)
     });
+    console.log('[API] Respuesta de Gemini, status:', response.status, response.statusText);
 
     // Manejar errores de respuesta antes de parsear JSON
     if (!response.ok) {
