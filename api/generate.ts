@@ -1,5 +1,7 @@
 // Import removed - using direct REST API calls for Edge compatibility
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export const config = {
   runtime: 'edge',
 };
@@ -72,13 +74,9 @@ export default async function handler(req: Request) {
 
     console.log('[API] API Key válida (sanitized). Preparando petición a Gemini...');
 
-    // Configuración del modelo
-    // Usamos gemini-2.0-flash-exp (modelo experimental más reciente)
-    const model = "gemini-2.0-flash-exp";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cleanApiKey}`;
-
-    console.log('[API] Modelo:', model);
-    console.log('[API] URL (sin key):', apiUrl.replace(cleanApiKey, 'API_KEY_HIDDEN'));
+    // Configuración del modelo alineada con el entorno local (modelo estable)
+    const apiVersion = 'v1';
+    const primaryModel = 'gemini-1.5-flash-latest';
 
     // Construir el body para la API de Gemini
     const contents = [];
@@ -109,18 +107,49 @@ export default async function handler(req: Request) {
       contents: contents
     };
 
-    // NOTA: response_mime_type removido temporalmente porque causa 400 en todos los modelos
-    // Esto puede ser una limitación de la API key o región
-    // El cliente puede parsear JSON desde texto plano de todas formas
+    // NOTA: response_mime_type removido temporalmente porque causa 400 en algunos modelos/regiones.
+    // El cliente ya maneja JSON embebido como texto plano.
+
+    const buildApiUrl = (modelName: string) =>
+      `https://generativelanguage.googleapis.com/${apiVersion}/models/${modelName}:generateContent?key=${cleanApiKey}`;
+
+    const executeGeminiRequest = async (modelName: string) => {
+      const apiUrl = buildApiUrl(modelName);
+      console.log('[API] Modelo:', modelName);
+      console.log('[API] URL (sin key):', apiUrl.replace(cleanApiKey, 'API_KEY_HIDDEN'));
+      return fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      });
+    };
+
+    const handleRateLimit = async (initialResponse: Response, modelName: string) => {
+      const maxRetries = 2;
+      let attempt = 0;
+      let response = initialResponse;
+
+      while (response.status === 429 && attempt < maxRetries) {
+        const retryAfterHeader = response.headers.get('retry-after');
+        const parsedRetryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) : NaN;
+        const waitSeconds = Number.isFinite(parsedRetryAfter) && parsedRetryAfter > 0
+          ? Math.min(parsedRetryAfter, 60)
+          : Math.min(5 * (attempt + 1), 30);
+
+        console.warn(`[API] Rate limit 429 para modelo ${modelName}. Esperando ${waitSeconds}s antes de reintentar (intento ${attempt + 1}/${maxRetries}).`);
+        await sleep(waitSeconds * 1000);
+        response = await executeGeminiRequest(modelName);
+        attempt++;
+      }
+
+      return response;
+    };
 
     console.log('[API] Enviando petición a Gemini API...');
-    let response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    });
+    let response = await executeGeminiRequest(primaryModel);
+    response = await handleRateLimit(response, primaryModel);
     console.log('[API] Respuesta de Gemini, status:', response.status, response.statusText);
 
     // Si es 404 o 400 (Bad Request, posible modelo inválido), intentar con modelos alternativos
@@ -128,23 +157,18 @@ export default async function handler(req: Request) {
       console.log(`[API] Error ${response.status} con modelo principal. Intentando alternativas...`);
       const modelAlternatives = [
         "gemini-1.5-flash",
-        "gemini-1.5-pro"
+        "gemini-1.5-pro",
+        "gemini-pro"
       ];
 
       let success = false; // Initialize success flag
       for (const altModel of modelAlternatives) {
-        if (altModel === model) continue;
+        if (altModel === primaryModel) continue;
 
         console.log(`[API] Intentando con modelo alternativo: ${altModel}...`);
-        const altUrl = `https://generativelanguage.googleapis.com/v1beta/models/${altModel}:generateContent?key=${cleanApiKey}`;
         try {
-          const altResponse = await fetch(altUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-          });
+          let altResponse = await executeGeminiRequest(altModel);
+          altResponse = await handleRateLimit(altResponse, altModel);
 
           if (altResponse.ok) {
             console.log(`[API] Éxito con modelo alternativo: ${altModel}`);
@@ -165,7 +189,7 @@ export default async function handler(req: Request) {
           const errorText = await response.text();
           console.error('[API] FAT AL: Todos los modelos fallaron. Respuesta:', errorText.substring(0, 500));
           return new Response(JSON.stringify({
-            error: `Model ${model} not supported. Tried alternatives: ${modelAlternatives.join(', ')}`,
+            error: `Model ${primaryModel} not supported. Tried alternatives: ${modelAlternatives.join(', ')}`,
             details: errorText.substring(0, 200),
             suggestion: 'Verify your API key has access to Gemini models'
           }), {
@@ -174,7 +198,7 @@ export default async function handler(req: Request) {
           });
         } catch {
           return new Response(JSON.stringify({
-            error: `Model ${model} not supported. Tried alternatives: ${modelAlternatives.join(', ')}`,
+            error: `Model ${primaryModel} not supported. Tried alternatives: ${modelAlternatives.join(', ')}`,
             suggestion: 'Verify your API key has access to Gemini models'
           }), {
             status: 404,
@@ -207,10 +231,12 @@ export default async function handler(req: Request) {
       }
 
       if (response.status === 429) {
+        const retryAfterHeader = response.headers.get('retry-after');
         return new Response(JSON.stringify({
           error: '⏱️ Límite de solicitudes excedido',
-          message: 'Tu API Key ha alcanzado el límite de requests por minuto. Por favor espera 60 segundos antes de intentar de nuevo.',
-          suggestion: 'Si esto ocurre frecuentemente, considera actualizar tu plan en Google AI Studio para obtener límites más altos.'
+          message: 'Tu API Key ha alcanzado el límite de requests por minuto. Por favor espera unos segundos antes de intentar de nuevo.',
+          suggestion: 'Si esto ocurre frecuentemente, considera actualizar tu plan en Google AI Studio para obtener límites más altos.',
+          retryAfter: retryAfterHeader || undefined
         }), {
           status: 429,
           headers: { 'Content-Type': 'application/json' }

@@ -25,6 +25,13 @@ View your app in AI Studio: https://ai.studio/apps/drive/1bS88iV9DYBD0bv6XBK5R1T
 ### Error 500: /api/generate
 **Solución**: Este error indica que la API Key no está configurada. Ver sección "Configuración de API Key" más abajo.
 
+### Error 429: Rate limit (Too Many Requests)
+**Solución**: Google Gemini impone límites por minuto y por día sobre cada API Key. Si ves este error:
+1. Espera entre 30 y 60 segundos antes de volver a intentar (el servidor ahora reintenta automáticamente, pero puede que la cuota siga ocupada).
+2. Revisa en [Google AI Studio → Usage](https://aistudio.google.com/app/apikey) si agotaste tu cuota diaria o mensual.
+3. Evita lanzar múltiples brainstorms consecutivos; cada acción consume una request completa.
+4. Si necesitas más capacidad, considera actualizar tu plan o solicitar aumento de cuota en Google AI Studio.
+
 ### Error: Speech Recognition Network
 **Solución**: Este error ocurre cuando el reconocimiento de voz no puede conectarse. Asegúrate de:
 1. Tener conexión a internet
