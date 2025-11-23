@@ -20,14 +20,21 @@ export default async function handler(req: Request) {
       });
     }
 
-    const apiKey = process.env.GOOGLE_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+    // Buscar API Key en este orden (soporta múltiples nombres)
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY;
 
     if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'Server API Key not configured. Please set GOOGLE_API_KEY or API_KEY environment variable.' }), { 
+      console.error('[API] API Key no encontrada. Variables disponibles:', Object.keys(process.env).filter(k => k.includes('API') || k.includes('KEY')));
+      return new Response(JSON.stringify({ 
+        error: 'Server API Key not configured. Please set GEMINI_API_KEY, GOOGLE_API_KEY, or API_KEY environment variable in Vercel.',
+        hint: 'Check Settings → Environment Variables in your Vercel project'
+      }), { 
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
+    
+    console.log('[API] API Key encontrada, longitud:', apiKey.length);
 
     // Validar formato básico de API key (debe tener al menos 20 caracteres)
     if (apiKey.length < 20) {
@@ -101,7 +108,7 @@ export default async function handler(req: Request) {
       // Mensajes de error más descriptivos
       if (response.status === 401) {
         return new Response(JSON.stringify({ 
-          error: 'Invalid API Key. Please check your GOOGLE_API_KEY environment variable.' 
+          error: 'Invalid API Key. Please check your GEMINI_API_KEY or GOOGLE_API_KEY environment variable in Vercel.' 
         }), { 
           status: 401,
           headers: { 'Content-Type': 'application/json' }
@@ -179,8 +186,14 @@ export default async function handler(req: Request) {
         headers: { 'Content-Type': 'application/json' }
     });
 
-  } catch (error) {
-    console.error(error);
-    return new Response(JSON.stringify({ error: 'Internal Server Error' }), { status: 500 });
+  } catch (error: any) {
+    console.error('[API] Error interno:', error);
+    return new Response(JSON.stringify({ 
+      error: 'Internal Server Error',
+      message: error?.message || String(error)
+    }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 }

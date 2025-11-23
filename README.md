@@ -76,11 +76,14 @@ API_KEY=tu_api_key_aqui
 
 2. **Configurar Variables de Entorno:**
    - En la página del proyecto, ve a **Settings** → **Environment Variables**
-   - Agrega las siguientes variables:
-     - **Nombre:** `GOOGLE_API_KEY`
-     - **Valor:** Tu API Key de Google Gemini
-     - **Environment:** Selecciona Production, Preview y Development
+   - Agrega una de las siguientes variables (el código busca en este orden):
+     - **Opción 1 (Recomendada):** `GEMINI_API_KEY` 
+     - **Opción 2:** `GOOGLE_API_KEY`
+     - **Opción 3:** `API_KEY`
+   - **Valor:** Tu API Key de Google Gemini
+   - **Environment:** Selecciona Production, Preview y Development
    - Haz clic en "Save"
+   - **Importante:** Después de agregar la variable, necesitas hacer un nuevo deploy para que tome efecto
 
 3. **Configuración del Proyecto:**
    - **Framework Preset:** Vite (se detecta automáticamente)
