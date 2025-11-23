@@ -795,6 +795,32 @@ const App = () => {
       return;
     }
 
+    // Verificar que estamos en HTTPS (requerido para Speech Recognition)
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      const useHttps = confirm(
+        "El reconocimiento de voz requiere HTTPS. " +
+        "¿Quieres escribir tu idea manualmente en su lugar?"
+      );
+      if (useHttps) {
+        const text = prompt("Escribe tu idea:");
+        if (text) processInput(text);
+      }
+      return;
+    }
+
+    // Verificar conexión a internet
+    if (!navigator.onLine) {
+      const writeManually = confirm(
+        "No hay conexión a internet. El reconocimiento de voz requiere conexión. " +
+        "¿Quieres escribir tu idea manualmente?"
+      );
+      if (writeManually) {
+        const text = prompt("Escribe tu idea:");
+        if (text) processInput(text);
+      }
+      return;
+    }
+
     if (isRecording) {
       setIsRecording(false);
       stopAudioAnalysis();
@@ -828,7 +854,12 @@ const App = () => {
       } else {
         errorMessage += `Error: ${audioError.message || 'Error desconocido'}`;
       }
-      alert(errorMessage);
+      
+      const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
+      if (writeManually) {
+        const text = prompt("Escribe tu idea:");
+        if (text) processInput(text);
+      }
       return;
     }
 
@@ -839,6 +870,35 @@ const App = () => {
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
     recognition.continuous = false; // No reiniciar automáticamente
+    
+    // Agregar listener para cambios en la conexión
+    const handleOnline = () => {
+      console.log("[Speech] Conexión restaurada");
+    };
+    
+    const handleOffline = () => {
+      console.warn("[Speech] Conexión perdida durante la grabación");
+      if (isRecording && (window as any).activeRecognition) {
+        try {
+          (window as any).activeRecognition.stop();
+        } catch (e) {
+          console.log("Error al detener reconocimiento por pérdida de conexión:", e);
+        }
+        setIsRecording(false);
+        stopAudioAnalysis();
+        (window as any).activeRecognition = null;
+        alert("Se perdió la conexión a internet. El reconocimiento de voz requiere conexión activa.");
+      }
+    };
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    // Limpiar listeners cuando termine
+    const cleanup = () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
 
     // Guardar referencia global para poder detenerla si es necesario
     (window as any).activeRecognition = recognition;
@@ -851,6 +911,7 @@ const App = () => {
         const text = event.results[0][0].transcript;
         console.log("[Speech] Texto transcrito:", text);
         hasResult = true;
+        cleanup(); // Limpiar listeners
         setIsRecording(false);
         stopAudioAnalysis();
         (window as any).activeRecognition = null;
@@ -867,6 +928,7 @@ const App = () => {
       console.error("[Speech] Error:", event.error, event);
       (window as any).lastSpeechError = event.error;
       hasResult = false;
+      cleanup(); // Limpiar listeners
       setIsRecording(false);
       stopAudioAnalysis();
       (window as any).activeRecognition = null;
@@ -883,8 +945,18 @@ const App = () => {
           errorMessage = "Permisos de micrófono denegados. Por favor, permite el acceso al micrófono.";
           break;
         case 'network':
-          errorMessage = "Error de red. Verifica tu conexión a internet.";
-          break;
+          errorMessage = "Error de conexión a internet. El reconocimiento de voz requiere conexión activa.\n\n";
+          errorMessage += "Por favor:\n";
+          errorMessage += "1. Verifica tu conexión a internet\n";
+          errorMessage += "2. Asegúrate de estar en HTTPS (requerido para reconocimiento de voz)\n";
+          errorMessage += "3. Intenta de nuevo en unos momentos";
+          
+          const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
+          if (writeManually) {
+            const text = prompt("Escribe tu idea:");
+            if (text) processInput(text);
+          }
+          return;
         case 'aborted':
           // Ignorar errores de aborto (usuario canceló)
           console.log("[Speech] Reconocimiento abortado por el usuario");
@@ -900,6 +972,7 @@ const App = () => {
 
     recognition.onend = () => {
       console.log("[Speech] Reconocimiento finalizado. HasResult:", hasResult);
+      cleanup(); // Limpiar listeners
       setIsRecording(false);
       stopAudioAnalysis();
       (window as any).activeRecognition = null;
@@ -930,10 +1003,30 @@ const App = () => {
     recognition.onnomatch = () => {
       console.warn("[Speech] No se encontró coincidencia");
       hasResult = false;
+      cleanup(); // Limpiar listeners
       setIsRecording(false);
       stopAudioAnalysis();
       (window as any).activeRecognition = null;
-      alert("No se pudo reconocer el audio. Por favor, intenta hablar más claro o más cerca del micrófono.");
+      
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      let errorMessage = "No se pudo reconocer el audio. ";
+      
+      if (isMobile) {
+        errorMessage += "\n\nSugerencias para móvil:\n";
+        errorMessage += "• Habla más cerca del micrófono\n";
+        errorMessage += "• Reduce el ruido de fondo\n";
+        errorMessage += "• Habla más claro y pausado\n";
+        errorMessage += "• Verifica que el micrófono no esté bloqueado\n";
+        errorMessage += "• Asegúrate de tener buena conexión a internet";
+      } else {
+        errorMessage += "Por favor, intenta hablar más claro o más cerca del micrófono.";
+      }
+      
+      const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
+      if (writeManually) {
+        const text = prompt("Escribe tu idea:");
+        if (text) processInput(text);
+      }
     };
 
     try {
