@@ -251,6 +251,8 @@ const App = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [recognitionRetryCount, setRecognitionRetryCount] = useState(0);
+  const [recognitionStatus, setRecognitionStatus] = useState<string>("");
 
   // Audio Visualizer State
   const [audioData, setAudioData] = useState<Uint8Array>(new Uint8Array(0));
@@ -1035,6 +1037,8 @@ const App = () => {
     }
   };
 
+  const MAX_RECOGNITION_RETRIES = 3;
+
   const handleMicClick = async () => {
     console.log("[Speech] handleMicClick llamado, isRecording:", isRecording);
 
@@ -1063,6 +1067,7 @@ const App = () => {
 
     if (isRecording) {
       setIsRecording(false);
+      setRecognitionStatus("");
       stopAudioAnalysis();
       // Detener reconocimiento si está activo
       if (recognitionRef.current) {
@@ -1078,7 +1083,13 @@ const App = () => {
 
     // Verificar conexión a internet antes de iniciar
     if (!navigator.onLine) {
-      alert("No hay conexión a internet. El reconocimiento de voz requiere conexión activa.");
+      const writeOffline = confirm("No hay conexión a internet.\n\n¿Quieres escribir tu idea manualmente?");
+      if (writeOffline) {
+        const text = prompt("Escribe tu idea:");
+        if (text && text.trim()) {
+          processInput(text.trim());
+        }
+      }
       return;
     }
 
@@ -1089,14 +1100,17 @@ const App = () => {
     }
 
     setIsRecording(true);
+    setRecognitionStatus("Conectando al servicio de voz...");
 
     // startAudioAnalysis ya solicita permisos, no necesitamos hacerlo dos veces
     try {
       await startAudioAnalysis();
       console.log("[Speech] Análisis de audio iniciado correctamente");
+      setRecognitionStatus("Escuchando...");
     } catch (audioError: any) {
       console.error("[Speech] Error al iniciar análisis de audio:", audioError);
       setIsRecording(false);
+      setRecognitionStatus("");
 
       let errorMsg = "No se pudo acceder al micrófono. ";
       if (audioError.name === 'NotAllowedError' || audioError.name === 'PermissionDeniedError') {
@@ -1127,6 +1141,7 @@ const App = () => {
     recognitionRef.current = recognition;
 
     let hasResult = false;
+    let currentRetry = 0;
 
     recognition.onresult = (event: any) => {
       console.log("[Speech] Resultado recibido:", event);
@@ -1135,9 +1150,17 @@ const App = () => {
       if (!event.results || event.results.length === 0 || !event.results[0] || event.results[0].length === 0) {
         console.warn("[Speech] Resultado vacío o inválido");
         setIsRecording(false);
+        setRecognitionStatus("");
         stopAudioAnalysis();
         recognitionRef.current = null;
-        alert("No se detectó ningún texto. Por favor, intenta de nuevo.");
+
+        const tryAgain = confirm("No se detectó ningún texto.\n\n¿Quieres escribir tu idea manualmente?");
+        if (tryAgain) {
+          const text = prompt("Escribe tu idea:");
+          if (text && text.trim()) {
+            processInput(text.trim());
+          }
+        }
         return;
       }
 
@@ -1147,35 +1170,95 @@ const App = () => {
       if (!text || text.trim().length === 0) {
         console.warn("[Speech] Texto vacío");
         setIsRecording(false);
+        setRecognitionStatus("");
         stopAudioAnalysis();
         recognitionRef.current = null;
-        alert("No se detectó ningún texto. Por favor, intenta de nuevo.");
+
+        const tryAgain = confirm("No se detectó ningún texto.\n\n¿Quieres escribir tu idea manualmente?");
+        if (tryAgain) {
+          const text = prompt("Escribe tu idea:");
+          if (text && text.trim()) {
+            processInput(text.trim());
+          }
+        }
         return;
       }
 
       hasResult = true;
       setIsRecording(false);
+      setRecognitionStatus("");
+      setRecognitionRetryCount(0);
       stopAudioAnalysis();
       (window as any).activeRecognition = null;
       processInput(text.trim());
     };
 
-    recognition.onerror = (event: any) => {
+    const attemptRecognitionStart = async (retryCount: number = 0) => {
+      if (retryCount > 0) {
+        const delay = Math.pow(2, retryCount - 1) * 1000; // 1s, 2s, 4s
+        console.log(`[Speech] Reintentando en ${delay}ms... (Intento ${retryCount}/${MAX_RECOGNITION_RETRIES})`);
+        setRecognitionStatus(`Reintentando conexión... (${retryCount}/${MAX_RECOGNITION_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+
+      try {
+        console.log("[Speech] Iniciando reconocimiento de voz...");
+        setRecognitionStatus(retryCount === 0 ? "Escuchando..." : `Reintentando... (${retryCount}/${MAX_RECOGNITION_RETRIES})`);
+        recognition.start();
+        currentRetry = retryCount;
+        setRecognitionRetryCount(retryCount);
+      } catch (startError: any) {
+        console.error("[Speech] Error al iniciar reconocimiento:", startError);
+
+        if (retryCount < MAX_RECOGNITION_RETRIES) {
+          attemptRecognitionStart(retryCount + 1);
+        } else {
+          setIsRecording(false);
+          setRecognitionStatus("");
+          setRecognitionRetryCount(0);
+          stopAudioAnalysis();
+          recognitionRef.current = null;
+
+          const writeManually = confirm(`No se pudo iniciar el reconocimiento de voz después de ${MAX_RECOGNITION_RETRIES} intentos.\n\n¿Quieres escribir tu idea manualmente?`);
+          if (writeManually) {
+            const text = prompt("Escribe tu idea:");
+            if (text && text.trim()) {
+              processInput(text.trim());
+            }
+          }
+        }
+      }
+    };
+
+    recognition.onerror = async (event: any) => {
       console.error("[Speech] Error:", event.error, event);
 
       // No procesar si ya tenemos un resultado
       if (hasResult) return;
 
-      setIsRecording(false);
-      stopAudioAnalysis();
-      recognitionRef.current = null;
-
       let errorMessage = "Error en el reconocimiento de voz. ";
+      let shouldRetry = false;
 
       switch (event.error) {
         case 'no-speech':
           errorMessage = "No se detectó ningún audio. Por favor, habla más cerca del micrófono.";
-          break;
+          setIsRecording(false);
+          setRecognitionStatus("");
+          stopAudioAnalysis();
+          recognitionRef.current = null;
+
+          const tryAgain = confirm(errorMessage + "\n\n¿Quieres intentar de nuevo o escribir manualmente?");
+          if (tryAgain) {
+            // Reiniciar el proceso
+            setTimeout(() => handleMicClick(), 100);
+          } else {
+            const text = prompt("Escribe tu idea:");
+            if (text && text.trim()) {
+              processInput(text.trim());
+            }
+          }
+          return;
+
         case 'audio-capture':
           // Este error SÍ indica problema con el micrófono
           console.error("[Speech] Error de captura de audio - Problema con el micrófono");
@@ -1186,9 +1269,11 @@ const App = () => {
           errorMessage += "• Verifica que el micrófono funcione en otras aplicaciones\n";
           errorMessage += "• Intenta desconectar y volver a conectar el micrófono";
           break;
+
         case 'not-allowed':
           errorMessage = "Permisos de micrófono denegados. Por favor, permite el acceso al micrófono.";
           break;
+
         case 'network':
           // El error "network" NO significa que no tengas micrófono
           // Significa que no puede conectarse al servicio de reconocimiento de voz de Google
@@ -1197,7 +1282,17 @@ const App = () => {
           console.error("[Speech] navigator.onLine:", navigator.onLine);
           console.error("[Speech] location.protocol:", location.protocol);
           console.error("[Speech] location.hostname:", location.hostname);
+          console.error("[Speech] Retry count:", currentRetry);
 
+          // Retry automático para errores de red
+          if (currentRetry < MAX_RECOGNITION_RETRIES) {
+            shouldRetry = true;
+            console.log(`[Speech] Reintentando automáticamente... (${currentRetry + 1}/${MAX_RECOGNITION_RETRIES})`);
+            await attemptRecognitionStart(currentRetry + 1);
+            return;
+          }
+
+          // Si ya agotamos los reintentos, ofrecer escribir manualmente
           errorMessage = "Error de conexión con el servicio de reconocimiento de voz.\n\n";
           errorMessage += "Este error NO significa que no tengas micrófono.\n";
           errorMessage += "Significa que el navegador no puede conectarse al servicio de Google.\n\n";
@@ -1207,7 +1302,13 @@ const App = () => {
           errorMessage += "• No estás en HTTPS (requerido para reconocimiento de voz)\n";
           errorMessage += "• El servicio de Google está temporalmente no disponible\n";
           errorMessage += "• Proxy o VPN bloqueando la conexión\n\n";
-          errorMessage += "Solución: Verifica tu conexión a internet y asegúrate de estar en HTTPS.";
+          errorMessage += `Se intentó ${MAX_RECOGNITION_RETRIES} veces sin éxito.`;
+
+          setIsRecording(false);
+          setRecognitionStatus("");
+          setRecognitionRetryCount(0);
+          stopAudioAnalysis();
+          recognitionRef.current = null;
 
           // Ofrecer escribir manualmente como alternativa
           const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
@@ -1220,18 +1321,33 @@ const App = () => {
             }
           }
           return; // No mostrar alert adicional
+
         case 'aborted':
           // Ignorar errores de aborto (usuario canceló)
           console.log("[Speech] Reconocimiento abortado");
+          setIsRecording(false);
+          setRecognitionStatus("");
+          setRecognitionRetryCount(0);
+          stopAudioAnalysis();
+          recognitionRef.current = null;
           return;
+
         case 'service-not-allowed':
           errorMessage = "El servicio de reconocimiento de voz no está disponible.";
           break;
+
         default:
           errorMessage += `Error: ${event.error || 'Error desconocido'}`;
       }
 
-      alert(errorMessage);
+      if (!shouldRetry) {
+        setIsRecording(false);
+        setRecognitionStatus("");
+        setRecognitionRetryCount(0);
+        stopAudioAnalysis();
+        recognitionRef.current = null;
+        alert(errorMessage);
+      }
     };
 
     recognition.onend = () => {
@@ -1246,15 +1362,16 @@ const App = () => {
         }
       }
 
-      setIsRecording(false);
-      stopAudioAnalysis();
-      recognitionRef.current = null;
+      // No limpiar estados aquí si vamos a reintentar
+      // Los estados se limpian en los handlers de error/resultado
     };
 
     recognition.onnomatch = () => {
       console.warn("[Speech] No se encontró coincidencia");
       hasResult = false;
       setIsRecording(false);
+      setRecognitionStatus("");
+      setRecognitionRetryCount(0);
       stopAudioAnalysis();
       recognitionRef.current = null;
 
@@ -1271,19 +1388,17 @@ const App = () => {
         errorMessage += "Por favor, intenta hablar más claro o más cerca del micrófono.";
       }
 
-      alert(errorMessage);
+      const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
+      if (writeManually) {
+        const text = prompt("Escribe tu idea:");
+        if (text && text.trim()) {
+          processInput(text.trim());
+        }
+      }
     };
 
-    try {
-      console.log("[Speech] Iniciando reconocimiento de voz...");
-      recognition.start();
-    } catch (startError: any) {
-      console.error("[Speech] Error al iniciar reconocimiento:", startError);
-      setIsRecording(false);
-      stopAudioAnalysis();
-      recognitionRef.current = null;
-      alert(`Error al iniciar el reconocimiento de voz: ${startError.message || 'Error desconocido'}`);
-    }
+    // Iniciar el proceso con retry automático
+    attemptRecognitionStart(0);
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1751,7 +1866,14 @@ const App = () => {
               <Mic className="w-8 h-8 text-white" />
             )}
           </button>
+          {/* Recognition Status Indicator */}
+          {recognitionStatus && (
+            <div className="bg-orange-500/90 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] text-center">
+              {recognitionStatus}
+            </div>
+          )}
         </div>
+
 
         {/* Chat Button Placeholder to balance layout */}
         <div className="w-12 h-12 pointer-events-none opacity-0" />
