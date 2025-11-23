@@ -66,15 +66,38 @@ API_KEY=tu_api_key_aqui
 - Reinicia el servidor de desarrollo (`npm run dev`) después de crear o modificar `.env.local`
 - Las variables de entorno se cargan automáticamente por Vite
 
-#### Para producción (Vercel/Netlify):
+#### Para producción en Vercel:
 
-**Vercel:**
-- Ve a tu proyecto → Settings → Environment Variables
-- Agrega `GOOGLE_API_KEY` con tu API key
+1. **Conectar el repositorio a Vercel:**
+   - Ve a [vercel.com](https://vercel.com) e inicia sesión
+   - Haz clic en "Add New Project"
+   - Importa tu repositorio de GitHub (`ivbartolo/asistente`)
+   - Vercel detectará automáticamente que es un proyecto Vite
 
-**Netlify:**
-- Ve a Site settings → Environment variables
-- Agrega `GOOGLE_API_KEY` con tu API key
+2. **Configurar Variables de Entorno:**
+   - En la página del proyecto, ve a **Settings** → **Environment Variables**
+   - Agrega las siguientes variables:
+     - **Nombre:** `GOOGLE_API_KEY`
+     - **Valor:** Tu API Key de Google Gemini
+     - **Environment:** Selecciona Production, Preview y Development
+   - Haz clic en "Save"
+
+3. **Configuración del Proyecto:**
+   - **Framework Preset:** Vite (se detecta automáticamente)
+   - **Build Command:** `npm run build` (por defecto)
+   - **Output Directory:** `dist` (por defecto)
+   - **Install Command:** `npm install` (por defecto)
+
+4. **Desplegar:**
+   - Haz clic en "Deploy"
+   - Vercel construirá y desplegará tu aplicación automáticamente
+   - Una vez completado, tendrás una URL como `tu-proyecto.vercel.app`
+
+5. **Verificar el despliegue:**
+   - La función serverless `/api/generate` se desplegará automáticamente
+   - Verifica que la aplicación funcione correctamente en la URL de producción
+
+**Nota:** El archivo `vercel.json` ya está configurado en el proyecto para optimizar el despliegue.
 
 ## Run Locally
 

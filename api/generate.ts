@@ -37,10 +37,9 @@ export default async function handler(req: Request) {
       });
     }
 
-    // Usar gemini-1.5-flash que es estable y soporta imágenes
-    // gemini-2.0-flash puede no estar disponible en todas las regiones
-    const model = "gemini-1.5-flash";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    // Usar gemini-2.0-flash-exp que es el modelo más reciente
+    const model = "gemini-2.0-flash-exp";
+    const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
     
     const contents = [];
     const parts = [];
@@ -63,11 +62,15 @@ export default async function handler(req: Request) {
     contents.push({ parts });
 
     const body: any = {
-        contents: contents,
-        generationConfig: {
-            response_mime_type: isJson ? "application/json" : "text/plain"
-        }
+        contents: contents
     };
+    
+    // Agregar generationConfig solo si es necesario y con la estructura correcta
+    if (isJson) {
+        body.generationConfig = {
+            responseMimeType: "application/json"
+        };
+    }
 
     if (systemInstruction) {
         body.systemInstruction = {
