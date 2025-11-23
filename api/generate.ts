@@ -208,7 +208,9 @@ export default async function handler(req: Request) {
 
       if (response.status === 429) {
         return new Response(JSON.stringify({
-          error: 'Rate limit exceeded. Please try again later.'
+          error: '⏱️ Límite de solicitudes excedido',
+          message: 'Tu API Key ha alcanzado el límite de requests por minuto. Por favor espera 60 segundos antes de intentar de nuevo.',
+          suggestion: 'Si esto ocurre frecuentemente, considera actualizar tu plan en Google AI Studio para obtener límites más altos.'
         }), {
           status: 429,
           headers: { 'Content-Type': 'application/json' }
