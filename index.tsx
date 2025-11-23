@@ -150,6 +150,9 @@ const callAI = async (params: { prompt: string, image?: string, systemInstructio
       if (typeof err === 'object' && err !== null) {
         if (err.error) {
           errorMessage = err.error;
+          if (err.details) {
+            errorMessage += ` Details: ${typeof err.details === 'string' ? err.details : JSON.stringify(err.details)}`;
+          }
         } else if (err.message) {
           errorMessage = err.message;
         } else if (err.details) {

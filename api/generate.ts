@@ -67,12 +67,15 @@ export default async function handler(req: Request) {
       });
     }
 
-    console.log('[API] API Key válida. Preparando petición a Gemini...');
+    // Limpiar API Key de posibles espacios o comillas accidentales (común en Vercel)
+    const cleanApiKey = apiKey.trim().replace(/^["']|["']$/g, '');
+
+    console.log('[API] API Key válida (sanitized). Preparando petición a Gemini...');
 
     // Configuración del modelo
-    // Usamos gemini-1.5-flash-latest que es estable y está ampliamente disponible
-    const model = "gemini-1.5-flash-latest";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
+    // Usamos gemini-1.5-flash (sin latest) para máxima compatibilidad
+    const model = "gemini-1.5-flash";
+    const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${cleanApiKey}`;
 
     console.log('[API] Modelo:', model);
     console.log('[API] URL (sin key):', apiUrl.replace(apiKey, 'API_KEY_HIDDEN'));
@@ -134,7 +137,7 @@ export default async function handler(req: Request) {
         if (altModel === model) continue;
 
         console.log(`[API] Intentando con modelo alternativo: ${altModel}...`);
-        const altUrl = `https://generativelanguage.googleapis.com/v1/models/${altModel}:generateContent?key=${apiKey}`;
+        const altUrl = `https://generativelanguage.googleapis.com/v1/models/${altModel}:generateContent?key=${cleanApiKey}`;
         try {
           const altResponse = await fetch(altUrl, {
             method: 'POST',
