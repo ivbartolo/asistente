@@ -73,9 +73,9 @@ export default async function handler(req: Request) {
     console.log('[API] API Key válida (sanitized). Preparando petición a Gemini...');
 
     // Configuración del modelo
-    // Usamos gemini-pro que está disponible en TODAS las API keys
-    const model = "gemini-pro";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${cleanApiKey}`;
+    // Usamos gemini-2.0-flash-exp (modelo experimental más reciente)
+    const model = "gemini-2.0-flash-exp";
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cleanApiKey}`;
 
     console.log('[API] Modelo:', model);
     console.log('[API] URL (sin key):', apiUrl.replace(cleanApiKey, 'API_KEY_HIDDEN'));
@@ -127,7 +127,8 @@ export default async function handler(req: Request) {
     if (!response.ok && (response.status === 404 || response.status === 400)) {
       console.log(`[API] Error ${response.status} con modelo principal. Intentando alternativas...`);
       const modelAlternatives = [
-        "gemini-1.0-pro"
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
       ];
 
       let success = false; // Initialize success flag
@@ -135,7 +136,7 @@ export default async function handler(req: Request) {
         if (altModel === model) continue;
 
         console.log(`[API] Intentando con modelo alternativo: ${altModel}...`);
-        const altUrl = `https://generativelanguage.googleapis.com/v1/models/${altModel}:generateContent?key=${cleanApiKey}`;
+        const altUrl = `https://generativelanguage.googleapis.com/v1beta/models/${altModel}:generateContent?key=${cleanApiKey}`;
         try {
           const altResponse = await fetch(altUrl, {
             method: 'POST',
