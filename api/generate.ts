@@ -108,7 +108,7 @@ export default async function handler(req: Request) {
     }
 
     console.log('[API] Enviando petición a Gemini API...');
-    const response = await fetch(apiUrl, {
+    let response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
@@ -117,7 +117,79 @@ export default async function handler(req: Request) {
     });
     console.log('[API] Respuesta de Gemini, status:', response.status, response.statusText);
 
-    // Manejar errores de respuesta antes de parsear JSON
+    // Si es 404, intentar con modelos alternativos
+    if (response.status === 404) {
+      console.log('[API] Modelo no encontrado, intentando alternativas...');
+      const modelAlternatives = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
+      ];
+      
+      let success = false;
+      for (const altModel of modelAlternatives) {
+        if (altModel === model) continue; // Ya lo intentamos
+        
+        console.log(`[API] Intentando con modelo: ${altModel}...`);
+        const altUrl = `https://generativelanguage.googleapis.com/v1/models/${altModel}:generateContent?key=${apiKey}`;
+        try {
+          const altResponse = await fetch(altUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          });
+          
+          if (altResponse.ok) {
+            console.log(`[API] Éxito con modelo alternativo: ${altModel}`);
+            response = altResponse;
+            success = true;
+            break;
+          } else {
+            console.log(`[API] Modelo ${altModel} también falló con status: ${altResponse.status}`);
+          }
+        } catch (altError) {
+          console.log(`[API] Error con modelo ${altModel}:`, altError);
+        }
+      }
+      
+      if (!success) {
+        // Si todos fallan, intentar con v1beta como último recurso
+        console.log('[API] Intentando con v1beta como último recurso...');
+        const v1betaUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        try {
+          const v1betaResponse = await fetch(v1betaUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          });
+          
+          if (v1betaResponse.ok) {
+            console.log('[API] Éxito con v1beta');
+            response = v1betaResponse;
+            success = true;
+          }
+        } catch (v1betaError) {
+          console.error('[API] Error con v1beta:', v1betaError);
+        }
+      }
+      
+      if (!success) {
+        return new Response(JSON.stringify({ 
+          error: `Model ${model} not found (404). Tried alternatives: ${modelAlternatives.join(', ')}`,
+          suggestion: 'Verify your API key has access to Gemini models'
+        }), { 
+          status: 404,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // Manejar otros errores de respuesta
     if (!response.ok) {
       let errorData;
       try {
