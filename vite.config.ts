@@ -151,9 +151,9 @@ function apiPlugin() {
                 contents: contents
               };
 
-              // Usamos SIEMPRE v1 y el modelo solicitado
+              // Usamos SIEMPRE v1 y el modelo estable probado
               const apiVersion = 'v1';
-              const model = 'gemini-2.5-flash';
+              const model = 'gemini-1.5-flash-latest';
               const apiUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
 
               console.log('[API Plugin] API Version:', apiVersion);
@@ -207,7 +207,7 @@ function apiPlugin() {
                   let success = false;
 
                   // Fallback simplificado para v1
-                  const alternatives = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+                  const alternatives = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"];
 
                   for (const altModel of alternatives) {
                     console.log(`[API Plugin] Intentando con modelo alternativo v1: ${altModel}...`);
