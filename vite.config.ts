@@ -12,21 +12,21 @@ function apiPlugin() {
       server.middlewares.use('/api/generate', async (req, res, next) => {
         // Cargar variables de entorno dentro del middleware para asegurar que se carguen correctamente
         const env = loadEnv(server.config.mode, process.cwd(), '');
-        
+
         // Función auxiliar para leer .env.local directamente si loadEnv no funciona
         const getApiKey = () => {
           // Primero intentar con loadEnv
           let apiKey = env.GOOGLE_API_KEY || env.API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY;
-          
+
           if (apiKey) {
             console.log('[API Plugin] API Key encontrada via loadEnv');
             return apiKey;
           }
-          
+
           // Si no funciona, leer .env.local directamente
           const cwd = process.cwd();
           const envLocalPath = resolve(cwd, '.env.local');
-          
+
           if (existsSync(envLocalPath)) {
             try {
               const envContent = readFileSync(envLocalPath, 'utf-8');
@@ -50,18 +50,18 @@ function apiPlugin() {
           } else {
             console.log('[API Plugin] .env.local no encontrado en:', envLocalPath);
           }
-          
+
           // Último recurso: process.env
           apiKey = process.env.GOOGLE_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
           if (apiKey) {
             console.log('[API Plugin] API Key encontrada en process.env');
             return apiKey;
           }
-          
+
           console.error('[API Plugin] API Key NO encontrada en ningún lugar');
           return null;
         };
-        
+
         if (req.method !== 'POST') {
           res.writeHead(405, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Method Not Allowed' }));
@@ -87,10 +87,10 @@ function apiPlugin() {
                 res.end(JSON.stringify({ error: 'Invalid JSON in request body', details: String(parseError) }));
                 return;
               }
-              
+
               const { prompt, image, systemInstruction, isJson } = parsedBody;
               console.log('[API Plugin] Body parseado correctamente. Prompt length:', prompt?.length || 0);
-              
+
               // Validar prompt
               if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -109,8 +109,8 @@ function apiPlugin() {
                   envLocalExists: existsSync(process.cwd() + '/.env.local')
                 });
                 res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
-                  error: 'Server API Key not configured. Please set GOOGLE_API_KEY, API_KEY, VITE_GEMINI_API_KEY, or GEMINI_API_KEY in .env.local' 
+                res.end(JSON.stringify({
+                  error: 'Server API Key not configured. Please set GOOGLE_API_KEY, API_KEY, VITE_GEMINI_API_KEY, or GEMINI_API_KEY in .env.local'
                 }));
                 return;
               }
@@ -123,16 +123,19 @@ function apiPlugin() {
               }
 
               console.log('[API Plugin] API Key válida. Preparando petición a Gemini...');
-              // Llamar a la API de Gemini
-              // Usar gemini-2.0-flash-exp que es el modelo más reciente
-              const model = "gemini-2.0-flash-exp";
-              const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
-              console.log('[API Plugin] URL de API:', apiUrl.replace(apiKey, 'API_KEY_HIDDEN'));
-              
+
               const contents = [];
               const parts = [];
-              parts.push({ text: prompt });
-              
+
+              // Si hay systemInstruction, lo agregamos al inicio del prompt para simularlo en v1
+              let finalPrompt = prompt;
+              if (systemInstruction) {
+                finalPrompt = `System Instruction: ${systemInstruction}\n\nUser Request: ${prompt}`;
+                console.log('[API Plugin] System Instruction merged into prompt for V1 compatibility');
+              }
+
+              parts.push({ text: finalPrompt });
+
               if (image) {
                 parts.push({
                   inline_data: {
@@ -141,25 +144,21 @@ function apiPlugin() {
                   }
                 });
               }
-              
+
               contents.push({ parts });
 
               const requestBody: any = {
                 contents: contents
               };
-              
-              // Agregar generationConfig solo si es necesario y con la estructura correcta
-              if (isJson) {
-                requestBody.generationConfig = {
-                  response_mime_type: "application/json"
-                };
-              }
 
-              if (systemInstruction) {
-                requestBody.system_instruction = {
-                  parts: [{ text: systemInstruction }]
-                };
-              }
+              // Usamos SIEMPRE v1 y el modelo solicitado
+              const apiVersion = 'v1';
+              const model = 'gemini-2.5-flash';
+              const apiUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
+
+              console.log('[API Plugin] API Version:', apiVersion);
+              console.log('[API Plugin] Model:', model);
+              console.log('[API Plugin] URL de API:', apiUrl.replace(apiKey, 'API_KEY_HIDDEN'));
 
               console.log('[API Plugin] Enviando petición a Gemini API...');
               let response;
@@ -175,7 +174,7 @@ function apiPlugin() {
               } catch (fetchError: any) {
                 console.error('[API Plugin] Error en fetch:', fetchError);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
+                res.end(JSON.stringify({
                   error: 'Network error calling Gemini API',
                   message: fetchError?.message || String(fetchError)
                 }));
@@ -188,95 +187,68 @@ function apiPlugin() {
                   errorData = await response.json();
                 } catch {
                   const text = await response.text();
-                  errorData = { 
+                  errorData = {
                     error: `API Error: ${response.status} ${response.statusText}`,
                     message: 'Failed to parse error response from Gemini API',
                     rawResponse: text.substring(0, 500) // Primeros 500 caracteres
                   };
                 }
-                
+
                 console.error('[API Plugin] Error de Gemini API:', {
                   status: response.status,
                   statusText: response.statusText,
                   errorData
                 });
-                
+
                 // Si es 404, intentar con diferentes variantes del modelo
                 if (response.status === 404) {
                   console.log('[API Plugin] Modelo no encontrado, intentando alternativas...');
-                  const modelAlternatives = [
-                    "gemini-2.0-flash",
-                    "gemini-1.5-flash-latest",
-                    "gemini-1.5-flash",
-                    "gemini-1.5-pro"
-                  ];
-                  
+
                   let success = false;
-                  for (const altModel of modelAlternatives) {
-                    if (altModel === model) continue; // Ya lo intentamos
-                    
-                    console.log(`[API Plugin] Intentando con modelo: ${altModel}...`);
+
+                  // Fallback simplificado para v1
+                  const alternatives = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+
+                  for (const altModel of alternatives) {
+                    console.log(`[API Plugin] Intentando con modelo alternativo v1: ${altModel}...`);
                     const altUrl = `https://generativelanguage.googleapis.com/v1/models/${altModel}:generateContent?key=${apiKey}`;
                     try {
                       const altResponse = await fetch(altUrl, {
                         method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json'
-                        },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(requestBody)
                       });
-                      
+
                       if (altResponse.ok) {
                         console.log(`[API Plugin] Éxito con modelo alternativo: ${altModel}`);
                         response = altResponse;
                         success = true;
                         break;
                       } else {
-                        console.log(`[API Plugin] Modelo ${altModel} también falló con status: ${altResponse.status}`);
+                        console.log(`[API Plugin] Modelo ${altModel} falló con status: ${altResponse.status}`);
                       }
                     } catch (altError) {
                       console.log(`[API Plugin] Error con modelo ${altModel}:`, altError);
                     }
                   }
-                  
-                  if (!success) {
-                    // Si todos fallan, intentar con v1beta como último recurso
-                    console.log('[API Plugin] Intentando con v1beta como último recurso...');
-                    const v1betaUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-                    try {
-                      const v1betaResponse = await fetch(v1betaUrl, {
-                        method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify(requestBody)
-                      });
-                      
-                      if (v1betaResponse.ok) {
-                        console.log('[API Plugin] Éxito con v1beta');
-                        response = v1betaResponse;
-                        success = true;
-                      }
-                    } catch (v1betaError) {
-                      console.error('[API Plugin] Error con v1beta:', v1betaError);
-                    }
-                  }
-                  
+
                   if (!success) {
                     res.writeHead(404, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ 
-                      error: `Model ${model} not found (404). Tried alternatives: ${modelAlternatives.join(', ')}`,
+                    res.end(JSON.stringify({
+                      error: `Model ${model} not found for API version ${apiVersion}.`,
+                      apiVersion: apiVersion,
+                      attemptedModel: model,
                       details: errorData,
-                      suggestion: 'Verify your API key has access to Gemini models'
+                      suggestion: 'Verify your API key has access to Gemini models. Try updating to latest Gemini models.'
                     }));
                     return;
                   }
                 } else {
                   const statusCode = response.status === 401 ? 401 : response.status === 429 ? 429 : 500;
                   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-                  res.end(JSON.stringify({ 
+                  res.end(JSON.stringify({
                     error: errorData.error || errorData.message || 'Error from Gemini API',
-                    details: errorData 
+                    details: errorData
                   }));
                   return;
                 }
@@ -290,7 +262,7 @@ function apiPlugin() {
               } catch (jsonError: any) {
                 console.error('[API Plugin] Error parseando respuesta JSON:', jsonError);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
+                res.end(JSON.stringify({
                   error: 'Invalid JSON response from Gemini API',
                   message: jsonError?.message || String(jsonError)
                 }));
@@ -299,9 +271,9 @@ function apiPlugin() {
 
               if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
+                res.end(JSON.stringify({
                   error: 'Invalid response structure from Gemini API',
-                  details: data 
+                  details: data
                 }));
                 return;
               }
@@ -309,20 +281,20 @@ function apiPlugin() {
               const candidate = data.candidates[0];
               if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
+                res.end(JSON.stringify({
                   error: 'No content in Gemini API response',
-                  details: data 
+                  details: data
                 }));
                 return;
               }
 
               const text = candidate.content.parts[0]?.text || "";
-              
+
               if (!text) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
+                res.end(JSON.stringify({
                   error: 'Empty response from Gemini API',
-                  details: data 
+                  details: data
                 }));
                 return;
               }
@@ -336,7 +308,7 @@ function apiPlugin() {
               const errorMessage = error?.message || String(error);
               const errorStack = error?.stack || '';
               res.writeHead(500, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ 
+              res.end(JSON.stringify({
                 error: 'Internal Server Error',
                 message: errorMessage,
                 stack: process.env.NODE_ENV === 'development' ? errorStack : undefined
@@ -347,7 +319,7 @@ function apiPlugin() {
           console.error('Request parsing error:', error);
           const errorMessage = error?.message || String(error);
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ 
+          res.end(JSON.stringify({
             error: 'Internal Server Error',
             message: errorMessage
           }));

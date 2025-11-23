@@ -9,7 +9,7 @@ export default async function handler(req: Request) {
   console.log('[API] Función /api/generate llamada');
   console.log('[API] Método:', req.method);
   console.log('[API] URL:', req.url);
-  
+
   if (req.method !== 'POST') {
     console.log('[API] Método no permitido:', req.method);
     return new Response('Method Not Allowed', { status: 405 });
@@ -19,10 +19,10 @@ export default async function handler(req: Request) {
     console.log('[API] Parseando body de la petición...');
     const { prompt, image, systemInstruction, isJson } = await req.json();
     console.log('[API] Body parseado. Prompt length:', prompt?.length || 0);
-    
+
     // Validar que el prompt existe
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
-      return new Response(JSON.stringify({ error: 'Prompt is required and must be a non-empty string' }), { 
+      return new Response(JSON.stringify({ error: 'Prompt is required and must be a non-empty string' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -32,9 +32,9 @@ export default async function handler(req: Request) {
     // NOTA: En Vercel Edge Functions, NO usar VITE_* (solo para frontend)
     console.log('[API] Buscando API Key en variables de entorno...');
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY;
-    
+
     // Debug: mostrar qué variables están disponibles (sin mostrar valores)
-    const envKeys = Object.keys(process.env).filter(k => 
+    const envKeys = Object.keys(process.env).filter(k =>
       k.includes('API') || k.includes('KEY') || k.includes('GEMINI') || k.includes('GOOGLE')
     );
     console.log('[API] Variables de entorno relacionadas encontradas:', envKeys);
@@ -45,94 +45,98 @@ export default async function handler(req: Request) {
     if (!apiKey) {
       console.error('[API] ❌ API Key NO encontrada');
       console.error('[API] Variables disponibles con API/KEY:', envKeys);
-      return new Response(JSON.stringify({ 
+      return new Response(JSON.stringify({
         error: 'Server API Key not configured. Please set GEMINI_API_KEY, GOOGLE_API_KEY, or API_KEY environment variable in Vercel.',
         hint: 'Check Settings → Environment Variables in your Vercel project',
         availableEnvVars: envKeys
-      }), { 
+      }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     console.log('[API] ✅ API Key encontrada, longitud:', apiKey.length);
     console.log('[API] API Key empieza con:', apiKey.substring(0, 10) + '...');
 
-    // Validar formato básico de API key (debe tener al menos 20 caracteres)
+    // Validar formato de API Key (simple check)
     if (apiKey.length < 20) {
-      return new Response(JSON.stringify({ error: 'Invalid API Key format' }), { 
+      console.error('[API] API Key demasiado corta:', apiKey.length);
+      return new Response(JSON.stringify({ error: 'Invalid API Key format' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    // Usar gemini-1.5-flash-latest como modelo principal (más estable y disponible)
-    // gemini-2.0-flash-exp puede no estar disponible en todas las regiones/API keys
-    const model = "gemini-1.5-flash-latest";
+    console.log('[API] API Key válida. Preparando petición a Gemini...');
+
+    // Configuración del modelo
+    // Usamos gemini-2.5-flash como solicitado
+    const model = "gemini-2.5-flash";
     const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
-    
+
+    console.log('[API] Modelo:', model);
+    console.log('[API] URL (sin key):', apiUrl.replace(apiKey, 'API_KEY_HIDDEN'));
+
+    // Construir el body para la API de Gemini
     const contents = [];
     const parts = [];
-    
+
+    // Si hay systemInstruction, lo agregamos al inicio del prompt para simularlo en v1
+    // Esto evita problemas de compatibilidad con v1beta
+    let finalPrompt = prompt;
     if (systemInstruction) {
-       // La API REST soporta system_instruction a nivel de top-level, no dentro de contents
+      finalPrompt = `System Instruction: ${systemInstruction}\n\nUser Request: ${prompt}`;
+      console.log('[API] System Instruction merged into prompt for V1 compatibility');
     }
 
-    parts.push({ text: prompt });
-    
+    parts.push({ text: finalPrompt });
+
     if (image) {
-        parts.push({
-            inline_data: {
-                mime_type: "image/jpeg",
-                data: image
-            }
-        });
+      parts.push({
+        inline_data: {
+          mime_type: "image/jpeg",
+          data: image
+        }
+      });
     }
-    
+
     contents.push({ parts });
 
-    const body: any = {
-        contents: contents
+    const requestBody: any = {
+      contents: contents
     };
-    
-    // Agregar generationConfig solo si es necesario y con la estructura correcta
-    if (isJson) {
-        body.generationConfig = {
-            response_mime_type: "application/json"
-        };
-    }
 
-    if (systemInstruction) {
-        body.system_instruction = {
-            parts: [{ text: systemInstruction }]
-        };
+    // Opciones de generación si es JSON
+    if (isJson) {
+      requestBody.generationConfig = {
+        response_mime_type: "application/json"
+      };
     }
 
     console.log('[API] Enviando petición a Gemini API...');
     let response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(body)
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
     });
     console.log('[API] Respuesta de Gemini, status:', response.status, response.statusText);
 
-    // Si es 404, intentar con modelos alternativos
+    // Si es 404, intentar con diferentes variantes del modelo
     if (response.status === 404) {
-      console.log('[API] Modelo no encontrado, intentando alternativas...');
+      console.log('[API] Modelo no encontrado (404), intentando alternativas...');
       const modelAlternatives = [
-        "gemini-1.5-flash",  // Modelo estable más común
-        "gemini-1.5-pro",   // Modelo más potente
-        "gemini-2.0-flash", // Si está disponible
-        "gemini-2.0-flash-exp" // Experimental, último recurso
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
       ];
-      
-      let success = false;
+
+      let success = false; // Initialize success flag
       for (const altModel of modelAlternatives) {
-        if (altModel === model) continue; // Ya lo intentamos
-        
-        console.log(`[API] Intentando con modelo: ${altModel}...`);
+        if (altModel === model) continue;
+
+        console.log(`[API] Intentando con modelo alternativo: ${altModel}...`);
         const altUrl = `https://generativelanguage.googleapis.com/v1/models/${altModel}:generateContent?key=${apiKey}`;
         try {
           const altResponse = await fetch(altUrl, {
@@ -140,22 +144,22 @@ export default async function handler(req: Request) {
             headers: {
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify(body)
+            body: JSON.stringify(requestBody)
           });
-          
+
           if (altResponse.ok) {
             console.log(`[API] Éxito con modelo alternativo: ${altModel}`);
             response = altResponse;
-            success = true;
+            success = true; // Set success to true
             break;
           } else {
-            console.log(`[API] Modelo ${altModel} también falló con status: ${altResponse.status}`);
+            console.log(`[API] Modelo ${altModel} falló con status: ${altResponse.status}`);
           }
         } catch (altError) {
           console.log(`[API] Error con modelo ${altModel}:`, altError);
         }
       }
-      
+
       if (!success) {
         // Si todos fallan, intentar con v1beta como último recurso
         console.log('[API] Intentando con v1beta como último recurso...');
@@ -166,9 +170,9 @@ export default async function handler(req: Request) {
             headers: {
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify(body)
+            body: JSON.stringify(requestBody)
           });
-          
+
           if (v1betaResponse.ok) {
             console.log('[API] Éxito con v1beta');
             response = v1betaResponse;
@@ -178,12 +182,12 @@ export default async function handler(req: Request) {
           console.error('[API] Error con v1beta:', v1betaError);
         }
       }
-      
+
       if (!success) {
-        return new Response(JSON.stringify({ 
+        return new Response(JSON.stringify({
           error: `Model ${model} not found (404). Tried alternatives: ${modelAlternatives.join(', ')}`,
           suggestion: 'Verify your API key has access to Gemini models'
-        }), { 
+        }), {
           status: 404,
           headers: { 'Content-Type': 'application/json' }
         });
@@ -196,35 +200,35 @@ export default async function handler(req: Request) {
       try {
         errorData = await response.json();
       } catch {
-        errorData = { 
+        errorData = {
           error: `API Error: ${response.status} ${response.statusText}`,
           message: 'Failed to parse error response from Gemini API'
         };
       }
-      
+
       // Mensajes de error más descriptivos
       if (response.status === 401) {
-        return new Response(JSON.stringify({ 
-          error: 'Invalid API Key. Please check your GEMINI_API_KEY or GOOGLE_API_KEY environment variable in Vercel.' 
-        }), { 
+        return new Response(JSON.stringify({
+          error: 'Invalid API Key. Please check your GEMINI_API_KEY or GOOGLE_API_KEY environment variable in Vercel.'
+        }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      
+
       if (response.status === 429) {
-        return new Response(JSON.stringify({ 
-          error: 'Rate limit exceeded. Please try again later.' 
-        }), { 
+        return new Response(JSON.stringify({
+          error: 'Rate limit exceeded. Please try again later.'
+        }), {
           status: 429,
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      
-      return new Response(JSON.stringify({ 
+
+      return new Response(JSON.stringify({
         error: errorData.error || errorData.message || 'Error from Gemini API',
-        details: errorData 
-      }), { 
+        details: errorData
+      }), {
         status: response.status,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -235,9 +239,9 @@ export default async function handler(req: Request) {
     try {
       data = await response.json();
     } catch (parseError) {
-      return new Response(JSON.stringify({ 
-        error: 'Invalid JSON response from Gemini API' 
-      }), { 
+      return new Response(JSON.stringify({
+        error: 'Invalid JSON response from Gemini API'
+      }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -245,10 +249,10 @@ export default async function handler(req: Request) {
 
     // Validar estructura de respuesta
     if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
-      return new Response(JSON.stringify({ 
+      return new Response(JSON.stringify({
         error: 'Invalid response structure from Gemini API',
-        details: data 
-      }), { 
+        details: data
+      }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -257,38 +261,38 @@ export default async function handler(req: Request) {
     // Extraer el texto de la respuesta de Gemini
     const candidate = data.candidates[0];
     if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
-      return new Response(JSON.stringify({ 
+      return new Response(JSON.stringify({
         error: 'No content in Gemini API response',
-        details: data 
-      }), { 
+        details: data
+      }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
     const text = candidate.content.parts[0]?.text || "";
-    
+
     if (!text) {
-      return new Response(JSON.stringify({ 
+      return new Response(JSON.stringify({
         error: 'Empty response from Gemini API',
-        details: data 
-      }), { 
+        details: data
+      }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
     return new Response(JSON.stringify({ text }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
     });
 
   } catch (error: any) {
     console.error('[API] Error interno:', error);
-    return new Response(JSON.stringify({ 
+    return new Response(JSON.stringify({
       error: 'Internal Server Error',
       message: error?.message || String(error)
-    }), { 
+    }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
     });

@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import './index.css';
 import { createRoot } from 'react-dom/client';
 import { Mic, Search, Plus, Calendar, X, Link as LinkIcon, DollarSign, FileText, BrainCircuit, MoreHorizontal, Layout, Share2, Info, Menu, CornerDownRight, Disc, ArrowLeft, Sparkles, Camera, Undo, Redo, Image as ImageIcon, MessageCircle, Send, CheckSquare, Square, Download, FileType } from 'lucide-react';
-import { GoogleGenAI, Type } from "@google/genai";
 import { db, saveViewport, saveSelectedNode, getMetadata } from './db';
 import { IdeaNode, Connection, Viewport, ChatMessage, CheckListItem, NodeType, NodeStatus, AttachmentFile } from './types';
 
@@ -24,10 +23,30 @@ Output JSON requerido:
 2. summary: Un resumen claro de la idea (max 20 palabras).
 3. category: Una categoría general o subcategoría lógica basada en el contexto.
 4. cost: Si se menciona dinero, extrae el valor numérico (ej: "unos 50 euros" -> 50). Si no, 0.
-5. links: Si se mencionan sitios web, extráelos.
-6. checklist: Si el texto implica una lista de pasos o tareas concretas (ej: "comprar X, Y y Z" o "pasos: 1, 2, 3"), extráelos como items de una lista.
+5. links: Si se mencionan sitios web, extráelos como array de strings.
+6. checklist: SIEMPRE intenta extraer tareas/items de listas del texto.
+   - Formato EXACTO: array de objetos [{"text": "tarea", "done": false}, ...]
+   - Ejemplos que DEBEN generar checklist:
+     * "comprar X, Y y Z" -> [{"text":"comprar X","done":false},{"text":"comprar Y","done":false},{"text":"comprar Z","done":false}]
+     * "pasos: hacer A, hacer B" -> [{"text":"hacer A","done":false},{"text":"hacer B","done":false}]
+     * "tengo que llamar, estudiar y limpiar" -> [{"text":"llamar","done":false},{"text":"estudiar","done":false},{"text":"limpiar","done":false}]
+   - Si NO hay lista clara, devuelve array vacío []
+   - NUNCA devuelvas string, SIEMPRE array de objetos
 
-IMPORTANTE: Sé conciso.
+Ejemplo completo:
+{
+  "title": "Compras del super",
+  "summary": "Lista de compras pendientes",
+  "category": "Personal",
+  "cost": 0,
+  "links": [],
+  "checklist": [
+    {"text": "comprar leche", "done": false},
+    {"text": "comprar pan", "done": false}
+  ]
+}
+
+IMPORTANTE: Devuelve SOLO JSON válido, sin texto adicional.
 `;
 
 // --- HELPERS: COMPRESSION ---
@@ -98,82 +117,104 @@ const callAI = async (params: { prompt: string, image?: string, systemInstructio
   // }
 
   // 2. Modo Producción (Serverless Proxy)
-  const response = await fetch('/api/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      prompt: params.prompt,
-      image: params.image ? params.image.split(',')[1] : undefined,
-      systemInstruction: params.systemInstruction,
-      isJson: params.isJson
-    })
-  });
-
-  if (!response.ok) {
-    let err: any;
-    try {
-      err = await response.json();
-    } catch {
-      err = { error: `HTTP ${response.status}: ${response.statusText}` };
-    }
-    
-    // Mejorar el mensaje de error para que sea más descriptivo
-    let errorMessage = err.error || err.message || JSON.stringify(err);
-    
-    // Si es un objeto, intentar extraer información útil
-    if (typeof err === 'object' && err !== null) {
-      if (err.error) {
-        errorMessage = err.error;
-      } else if (err.message) {
-        errorMessage = err.message;
-      } else if (err.details) {
-        errorMessage = `Error: ${JSON.stringify(err.details)}`;
-      } else {
-        errorMessage = `Error: ${JSON.stringify(err)}`;
-      }
-    }
-    
-    if (typeof errorMessage !== 'string') {
-      try {
-        errorMessage = JSON.stringify(errorMessage);
-      } catch {
-        errorMessage = String(errorMessage);
-      }
-    }
-
-    console.error("[callAI] API Error:", {
-      status: response.status,
-      statusText: response.statusText,
-      error: err,
-      errorMessage
-    });
-    
-    throw new Error(errorMessage);
-  }
-
-  let data;
   try {
-    const responseText = await response.text();
-    console.log("[callAI] Respuesta recibida (primeros 200 chars):", responseText.substring(0, 200));
-    
-    try {
-      data = JSON.parse(responseText);
-    } catch (parseError) {
-      console.error("[callAI] Error parsing JSON:", parseError);
-      console.error("[callAI] Respuesta completa:", responseText);
-      throw new Error(`Error al procesar la respuesta del servidor (Invalid JSON). Respuesta: ${responseText.substring(0, 100)}...`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+    const response = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: params.prompt,
+        image: params.image ? params.image.split(',')[1] : undefined,
+        systemInstruction: params.systemInstruction,
+        isJson: params.isJson
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      let err: any;
+      try {
+        err = await response.json();
+      } catch {
+        err = { error: `HTTP ${response.status}: ${response.statusText}` };
+      }
+
+      // Mejorar el mensaje de error para que sea más descriptivo
+      let errorMessage = err.error || err.message || JSON.stringify(err);
+
+      // Si es un objeto, intentar extraer información útil
+      if (typeof err === 'object' && err !== null) {
+        if (err.error) {
+          errorMessage = err.error;
+        } else if (err.message) {
+          errorMessage = err.message;
+        } else if (err.details) {
+          errorMessage = `Error: ${JSON.stringify(err.details)}`;
+        } else {
+          errorMessage = `Error: ${JSON.stringify(err)}`;
+        }
+      }
+
+      if (typeof errorMessage !== 'string') {
+        try {
+          errorMessage = JSON.stringify(errorMessage);
+        } catch {
+          errorMessage = String(errorMessage);
+        }
+      }
+
+      console.error("[callAI] API Error:", {
+        status: response.status,
+        statusText: response.statusText,
+        error: err,
+        errorMessage
+      });
+
+      throw new Error(errorMessage);
     }
-  } catch (parseError: any) {
-    console.error("[callAI] Error parsing API response:", parseError);
-    throw new Error(parseError.message || 'Error al procesar la respuesta del servidor');
-  }
 
-  if (!data || typeof data.text !== 'string') {
-    console.error("[callAI] Respuesta inválida:", data);
-    throw new Error(`Respuesta inválida del servidor (No text field). Estructura recibida: ${JSON.stringify(data).substring(0, 200)}`);
-  }
+    let data;
+    try {
+      const responseText = await response.text();
+      console.log("[callAI] Respuesta recibida (primeros 200 chars):", responseText.substring(0, 200));
 
-  return data.text;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error("[callAI] Error parsing JSON:", parseError);
+        console.error("[callAI] Respuesta completa:", responseText);
+        throw new Error(`Error al procesar la respuesta del servidor (Invalid JSON). Respuesta: ${responseText.substring(0, 100)}...`);
+      }
+    } catch (parseError: any) {
+      console.error("[callAI] Error parsing API response:", parseError);
+      throw new Error(parseError.message || 'Error al procesar la respuesta del servidor');
+    }
+
+    if (!data || typeof data.text !== 'string') {
+      console.error("[callAI] Respuesta inválida:", data);
+      throw new Error(`Respuesta inválida del servidor (No text field). Estructura recibida: ${JSON.stringify(data).substring(0, 200)}`);
+    }
+
+    return data.text;
+
+  } catch (fetchError: any) {
+    // Manejar timeout
+    if (fetchError.name === 'AbortError') {
+      throw new Error('La solicitud tardó demasiado. Verifica tu conexión a internet.');
+    }
+
+    // Manejar errores de red
+    if (fetchError.message?.includes('fetch failed') || fetchError.message?.includes('NetworkError')) {
+      throw new Error('Error de conexión. Verifica que estés conectado a internet.');
+    }
+
+    // Re-lanzar otros errores
+    throw fetchError;
+  }
 };
 
 // --- COMPONENT: APP ---
@@ -209,6 +250,7 @@ const App = () => {
   const audioStreamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const recognitionRef = useRef<any>(null);  // Para Speech Recognition
 
   // Interaction States
   const [tempConnection, setTempConnection] = useState<{ sourceId: string, endX: number, endY: number } | null>(null);
@@ -428,6 +470,14 @@ const App = () => {
     wakeSimulation();
   }, [nodes.length, connections.length, wakeSimulation]);
 
+  // Cleanup audio resources when component unmounts
+  useEffect(() => {
+    return () => {
+      console.log("[Cleanup] Limpiando recursos de audio");
+      stopAudioAnalysis();
+    };
+  }, []);
+
 
   // -- TREE TRAVERSAL HELPERS --
 
@@ -481,7 +531,7 @@ const App = () => {
       audioStreamRef.current.getTracks().forEach(track => track.stop());
       audioStreamRef.current = null;
     }
-    
+
     // Cerrar AudioContext anterior si existe
     if (audioContextRef.current) {
       try {
@@ -491,18 +541,18 @@ const App = () => {
       }
       audioContextRef.current = null;
     }
-    
+
     // Cancelar animación anterior si existe
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
-    
+
     try {
       console.log("[Audio] Solicitando acceso al micrófono...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       console.log("[Audio] Acceso al micrófono concedido");
-      
+
       audioStreamRef.current = stream;
       const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioContext();
@@ -530,12 +580,12 @@ const App = () => {
 
   const stopAudioAnalysis = () => {
     console.log("[Audio] Deteniendo análisis de audio...");
-    
+
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
-    
+
     if (audioContextRef.current) {
       try {
         audioContextRef.current.close().catch((e: any) => {
@@ -546,7 +596,7 @@ const App = () => {
       }
       audioContextRef.current = null;
     }
-    
+
     if (audioStreamRef.current) {
       audioStreamRef.current.getTracks().forEach(track => {
         track.stop();
@@ -554,7 +604,7 @@ const App = () => {
       });
       audioStreamRef.current = null;
     }
-    
+
     analyserRef.current = null;
     setAudioData(new Uint8Array(0));
     console.log("[Audio] Análisis de audio detenido");
@@ -566,89 +616,108 @@ const App = () => {
     const nodesToExport = visibleNodes;
     const connectionsToExport = visibleConnections;
 
-    if (nodesToExport.length === 0) return;
+    if (nodesToExport.length === 0) {
+      alert('No hay nodos visibles para exportar');
+      return;
+    }
 
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Calculate bounds with padding
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    nodesToExport.forEach(n => {
-      minX = Math.min(minX, n.x - 120);
-      minY = Math.min(minY, n.y - 60);
-      maxX = Math.max(maxX, n.x + 120);
-      maxY = Math.max(maxY, n.y + 60);
-    });
-
-    const width = maxX - minX;
-    const height = maxY - minY;
-
-    canvas.width = width;
-    canvas.height = height;
-
-    // Background
-    ctx.fillStyle = '#f8fafc';
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.translate(-minX, -minY);
-
-    // Draw Connections
-    connectionsToExport.forEach(conn => {
-      const source = nodesToExport.find(n => n.id === conn.sourceId);
-      const target = nodesToExport.find(n => n.id === conn.targetId);
-      if (!source || !target) return;
-
-      ctx.beginPath();
-      const isRootSource = !connections.some(c => c.targetId === source.id);
-
-      const x1 = source.x, y1 = source.y;
-      const x2 = target.x, y2 = target.y;
-      ctx.moveTo(x1, y1);
-      ctx.bezierCurveTo(x1 + (x2 - x1) / 2, y1, x2 - (x2 - x1) / 2, y2, x2, y2);
-
-      ctx.strokeStyle = isRootSource ? "#22d3ee" : "#a3e635";
-      ctx.lineWidth = isRootSource ? 3 : 1.5;
-      ctx.stroke();
-    });
-
-    // Draw Nodes
-    nodesToExport.forEach(node => {
-      const isGlobalRoot = !connections.some(c => c.targetId === node.id);
-
-      const w = 160;
-      const h = isGlobalRoot ? 60 : 40;
-      const x = node.x - w / 2;
-      const y = node.y - h / 2;
-
-      // Node Body
-      ctx.beginPath();
-      if (ctx.roundRect) {
-        ctx.roundRect(x, y, w, h, 999);
-      } else {
-        ctx.rect(x, y, w, h); // Fallback
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        alert('Tu navegador no soporta exportación de imágenes');
+        return;
       }
 
-      ctx.fillStyle = isGlobalRoot ? '#06b6d4' : '#fef3c7';
-      ctx.fill();
-      ctx.strokeStyle = isGlobalRoot ? '#bae6fd' : '#fcd34d';
-      ctx.lineWidth = isGlobalRoot ? 4 : 2;
-      ctx.stroke();
+      // Calculate bounds with padding
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      nodesToExport.forEach(n => {
+        minX = Math.min(minX, n.x - 120);
+        minY = Math.min(minY, n.y - 60);
+        maxX = Math.max(maxX, n.x + 120);
+        maxY = Math.max(maxY, n.y + 60);
+      });
 
-      // Node Text
-      ctx.fillStyle = isGlobalRoot ? '#ffffff' : '#1e293b';
-      ctx.font = isGlobalRoot ? 'bold 14px sans-serif' : '500 12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      const width = maxX - minX;
+      const height = maxY - minY;
 
-      const text = node.title.length > 20 ? node.title.substring(0, 20) + '...' : node.title;
-      ctx.fillText(text, node.x, node.y);
-    });
+      // Validar tamaño máximo del canvas
+      const MAX_CANVAS_SIZE = 16384; // Límite seguro para la mayoría de navegadores
+      if (width > MAX_CANVAS_SIZE || height > MAX_CANVAS_SIZE) {
+        alert(`El mapa es demasiado grande para exportar (${Math.round(width)}×${Math.round(height)}px).\n\nIntenta:\n• Reducir el zoom\n• Filtrar nodos con búsqueda\n• Exportar en partes más pequeñas\n\nTamaño máximo: ${MAX_CANVAS_SIZE}×${MAX_CANVAS_SIZE}px`);
+        return;
+      }
 
-    const link = document.createElement('a');
-    link.download = 'ideaverse-map.png';
-    link.href = canvas.toDataURL();
-    link.click();
+      canvas.width = width;
+      canvas.height = height;
+
+      // Background
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.translate(-minX, -minY);
+
+      // Draw Connections
+      connectionsToExport.forEach(conn => {
+        const source = nodesToExport.find(n => n.id === conn.sourceId);
+        const target = nodesToExport.find(n => n.id === conn.targetId);
+        if (!source || !target) return;
+
+        ctx.beginPath();
+        const isRootSource = !connections.some(c => c.targetId === source.id);
+
+        const x1 = source.x, y1 = source.y;
+        const x2 = target.x, y2 = target.y;
+        ctx.moveTo(x1, y1);
+        ctx.bezierCurveTo(x1 + (x2 - x1) / 2, y1, x2 - (x2 - x1) / 2, y2, x2, y2);
+
+        ctx.strokeStyle = isRootSource ? "#22d3ee" : "#a3e635";
+        ctx.lineWidth = isRootSource ? 3 : 1.5;
+        ctx.stroke();
+      });
+
+      // Draw Nodes
+      nodesToExport.forEach(node => {
+        const isGlobalRoot = !connections.some(c => c.targetId === node.id);
+
+        const w = 160;
+        const h = isGlobalRoot ? 60 : 40;
+        const x = node.x - w / 2;
+        const y = node.y - h / 2;
+
+        // Node Body
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(x, y, w, h, 999);
+        } else {
+          ctx.rect(x, y, w, h); // Fallback
+        }
+
+        ctx.fillStyle = isGlobalRoot ? '#06b6d4' : '#fef3c7';
+        ctx.fill();
+        ctx.strokeStyle = isGlobalRoot ? '#bae6fd' : '#fcd34d';
+        ctx.lineWidth = isGlobalRoot ? 4 : 2;
+        ctx.stroke();
+
+        // Node Text
+        ctx.fillStyle = isGlobalRoot ? '#ffffff' : '#1e293b';
+        ctx.font = isGlobalRoot ? 'bold 14px sans-serif' : '500 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const text = node.title.length > 20 ? node.title.substring(0, 20) + '...' : node.title;
+        ctx.fillText(text, node.x, node.y);
+      });
+
+      const link = document.createElement('a');
+      link.download = 'ideaverse-map.png';
+      link.href = canvas.toDataURL();
+      link.click();
+
+    } catch (error) {
+      console.error('Error al exportar imagen:', error);
+      alert('Error al exportar la imagen. Intenta con menos nodos visibles o reduce el zoom.');
+    }
   };
 
   const exportAsMarkdown = () => {
@@ -788,6 +857,48 @@ const App = () => {
       let data;
       try {
         data = JSON.parse(responseText || "{}");
+
+        // Debug logging
+        console.log("[ProcessInput] Respuesta AI parseada:", data);
+
+        // Validar y normalizar checklist
+        if (data.checklist) {
+          // Si es string, parsear manualmente
+          if (typeof data.checklist === 'string') {
+            console.warn("[ProcessInput] Checklist es string, parseando:", data.checklist);
+            const items = data.checklist
+              .split(/[,\n]/)
+              .map(s => s.trim())
+              .filter(s => s.length > 0)
+              .map(text => ({ text, done: false }));
+            data.checklist = items;
+          }
+
+          // Si es array de strings, convertir a objetos
+          if (Array.isArray(data.checklist) && data.checklist.length > 0) {
+            if (typeof data.checklist[0] === 'string') {
+              console.warn("[ProcessInput] Convirtiendo array de strings a objetos");
+              data.checklist = data.checklist.map(text => ({ text, done: false }));
+            }
+
+            // Normalizar campos (text, description, task, etc.)
+            data.checklist = data.checklist.map((item, i) => {
+              if (!item || typeof item !== 'object') {
+                console.warn(`[ProcessInput] Item ${i} inválido, skipping`);
+                return null;
+              }
+
+              const text = item.text || item.description || item.task || item.name || String(item);
+              return {
+                text: text.trim(),
+                done: item.done === true
+              };
+            }).filter(item => item !== null && item.text?.length > 0);
+          }
+
+          console.log("[ProcessInput] Checklist normalizado:", data.checklist);
+        }
+
       } catch (parseError) {
         console.error("Error parsing AI response:", parseError, "Response:", responseText);
         throw new Error("La respuesta de la IA no es válida. Intenta de nuevo.");
@@ -818,11 +929,38 @@ const App = () => {
         links: data.links || [],
         images: isImage ? [(input as any).image] : [],
         attachments: [],
-        checklist: (data.checklist || []).map((item: any, i: number) => ({
-          id: `task-${Date.now()}-${i}`,
-          text: item.text,
-          done: item.done || false
-        })),
+        checklist: (() => {
+          try {
+            if (!data.checklist || !Array.isArray(data.checklist)) {
+              return [];
+            }
+
+            return data.checklist
+              .map((item: any, i: number) => {
+                if (!item || typeof item !== 'object') {
+                  console.warn(`[ProcessInput] Skipping invalid checklist item ${i}:`, item);
+                  return null;
+                }
+
+                const text = item.text || '';
+                if (!text || typeof text !== 'string' || text.trim().length === 0) {
+                  console.warn(`[ProcessInput] Skipping item ${i} without text:`, item);
+                  return null;
+                }
+
+                return {
+                  id: `task-${Date.now()}-${i}`,
+                  text: text.trim(),
+                  done: item.done === true
+                };
+              })
+              .filter((item): item is CheckListItem => item !== null);
+
+          } catch (error) {
+            console.error("[ProcessInput] Error procesando checklist:", error);
+            return [];
+          }
+        })(),
         type: isImage ? 'image' : 'text',
         status: 'draft',
         createdAt: Date.now()
@@ -858,9 +996,9 @@ const App = () => {
 
     } catch (e: any) {
       console.error("[ProcessInput] Error procesando idea:", e);
-      
+
       let errorMessage = "Error procesando la idea. ";
-      
+
       if (e && e.message) {
         // Analizar el tipo de error
         if (e.message.includes('API') || e.message.includes('servidor') || e.message.includes('fetch')) {
@@ -881,7 +1019,7 @@ const App = () => {
       } else {
         errorMessage += "Error desconocido. Intenta de nuevo.";
       }
-      
+
       console.error("[ProcessInput] Mensaje de error para usuario:", errorMessage);
       alert(errorMessage);
     } finally {
@@ -891,13 +1029,13 @@ const App = () => {
 
   const handleMicClick = async () => {
     console.log("[Speech] handleMicClick llamado, isRecording:", isRecording);
-    
+
     // Verificar soporte del navegador
     const hasSpeechRecognition = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
     console.log("[Speech] Soporte de reconocimiento de voz:", hasSpeechRecognition);
     console.log("[Speech] webkitSpeechRecognition:", 'webkitSpeechRecognition' in window);
     console.log("[Speech] SpeechRecognition:", 'SpeechRecognition' in window);
-    
+
     if (!hasSpeechRecognition) {
       const text = prompt("Tu navegador no soporta dictado nativo simple. Escribe tu idea:");
       if (text && text.trim()) {
@@ -907,7 +1045,7 @@ const App = () => {
       }
       return;
     }
-    
+
     // Verificar que getUserMedia esté disponible
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       console.error("[Speech] getUserMedia no está disponible");
@@ -919,13 +1057,13 @@ const App = () => {
       setIsRecording(false);
       stopAudioAnalysis();
       // Detener reconocimiento si está activo
-      if ((window as any).activeRecognition) {
+      if (recognitionRef.current) {
         try {
-          (window as any).activeRecognition.stop();
+          recognitionRef.current.stop();
         } catch (e) {
           console.log("[Speech] Error al detener:", e);
         }
-        (window as any).activeRecognition = null;
+        recognitionRef.current = null;
       }
       return;
     }
@@ -943,7 +1081,7 @@ const App = () => {
     }
 
     setIsRecording(true);
-    
+
     // startAudioAnalysis ya solicita permisos, no necesitamos hacerlo dos veces
     try {
       await startAudioAnalysis();
@@ -951,7 +1089,7 @@ const App = () => {
     } catch (audioError: any) {
       console.error("[Speech] Error al iniciar análisis de audio:", audioError);
       setIsRecording(false);
-      
+
       let errorMsg = "No se pudo acceder al micrófono. ";
       if (audioError.name === 'NotAllowedError' || audioError.name === 'PermissionDeniedError') {
         errorMsg += "Por favor, permite el acceso al micrófono en la configuración del navegador.";
@@ -964,7 +1102,7 @@ const App = () => {
       } else {
         errorMsg += `Error: ${audioError.message || 'Error desconocido'}`;
       }
-      
+
       alert(errorMsg);
       return;
     }
@@ -977,32 +1115,32 @@ const App = () => {
     recognition.maxAlternatives = 1;
     recognition.continuous = false;
 
-    // Guardar referencia global
-    (window as any).activeRecognition = recognition;
+    // Guardar referencia en ref
+    recognitionRef.current = recognition;
 
     let hasResult = false;
 
     recognition.onresult = (event: any) => {
       console.log("[Speech] Resultado recibido:", event);
-      
+
       // Validar que existe el resultado
       if (!event.results || event.results.length === 0 || !event.results[0] || event.results[0].length === 0) {
         console.warn("[Speech] Resultado vacío o inválido");
         setIsRecording(false);
         stopAudioAnalysis();
-        (window as any).activeRecognition = null;
+        recognitionRef.current = null;
         alert("No se detectó ningún texto. Por favor, intenta de nuevo.");
         return;
       }
 
       const text = event.results[0][0].transcript;
       console.log("[Speech] Texto transcrito:", text);
-      
+
       if (!text || text.trim().length === 0) {
         console.warn("[Speech] Texto vacío");
         setIsRecording(false);
         stopAudioAnalysis();
-        (window as any).activeRecognition = null;
+        recognitionRef.current = null;
         alert("No se detectó ningún texto. Por favor, intenta de nuevo.");
         return;
       }
@@ -1016,16 +1154,16 @@ const App = () => {
 
     recognition.onerror = (event: any) => {
       console.error("[Speech] Error:", event.error, event);
-      
+
       // No procesar si ya tenemos un resultado
       if (hasResult) return;
 
       setIsRecording(false);
       stopAudioAnalysis();
-      (window as any).activeRecognition = null;
+      recognitionRef.current = null;
 
       let errorMessage = "Error en el reconocimiento de voz. ";
-      
+
       switch (event.error) {
         case 'no-speech':
           errorMessage = "No se detectó ningún audio. Por favor, habla más cerca del micrófono.";
@@ -1051,7 +1189,7 @@ const App = () => {
           console.error("[Speech] navigator.onLine:", navigator.onLine);
           console.error("[Speech] location.protocol:", location.protocol);
           console.error("[Speech] location.hostname:", location.hostname);
-          
+
           errorMessage = "Error de conexión con el servicio de reconocimiento de voz.\n\n";
           errorMessage += "Este error NO significa que no tengas micrófono.\n";
           errorMessage += "Significa que el navegador no puede conectarse al servicio de Google.\n\n";
@@ -1062,7 +1200,7 @@ const App = () => {
           errorMessage += "• El servicio de Google está temporalmente no disponible\n";
           errorMessage += "• Proxy o VPN bloqueando la conexión\n\n";
           errorMessage += "Solución: Verifica tu conexión a internet y asegúrate de estar en HTTPS.";
-          
+
           // Ofrecer escribir manualmente como alternativa
           const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
           if (writeManually) {
@@ -1084,13 +1222,13 @@ const App = () => {
         default:
           errorMessage += `Error: ${event.error || 'Error desconocido'}`;
       }
-      
+
       alert(errorMessage);
     };
 
     recognition.onend = () => {
       console.log("[Speech] Reconocimiento finalizado. HasResult:", hasResult);
-      
+
       // Solo limpiar si no hay resultado y no fue por un error conocido
       if (!hasResult) {
         const lastError = (window as any).lastSpeechError;
@@ -1099,10 +1237,10 @@ const App = () => {
           console.log("[Speech] Reconocimiento terminó sin resultado");
         }
       }
-      
+
       setIsRecording(false);
       stopAudioAnalysis();
-      (window as any).activeRecognition = null;
+      recognitionRef.current = null;
     };
 
     recognition.onnomatch = () => {
@@ -1110,11 +1248,11 @@ const App = () => {
       hasResult = false;
       setIsRecording(false);
       stopAudioAnalysis();
-      (window as any).activeRecognition = null;
-      
+      recognitionRef.current = null;
+
       const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
       let errorMessage = "No se pudo reconocer el audio. ";
-      
+
       if (isMobile) {
         errorMessage += "\n\nSugerencias:\n";
         errorMessage += "• Habla más cerca del micrófono\n";
@@ -1124,7 +1262,7 @@ const App = () => {
       } else {
         errorMessage += "Por favor, intenta hablar más claro o más cerca del micrófono.";
       }
-      
+
       alert(errorMessage);
     };
 
@@ -1135,7 +1273,7 @@ const App = () => {
       console.error("[Speech] Error al iniciar reconocimiento:", startError);
       setIsRecording(false);
       stopAudioAnalysis();
-      (window as any).activeRecognition = null;
+      recognitionRef.current = null;
       alert(`Error al iniciar el reconocimiento de voz: ${startError.message || 'Error desconocido'}`);
     }
   };
@@ -1713,19 +1851,116 @@ const App = () => {
           onGenerateBrainstorm={async (node) => {
             setIsProcessing(true);
             try {
-              const prompt = `Genera 3 ideas breves y creativas relacionadas con: "${node.title}". Devuelve SOLO un array JSON de strings.`;
+              const prompt = `Genera 3 ideas breves y creativas relacionadas con: "${node.title}".`;
+
+              const systemInstruction = `Eres un generador de ideas creativas.
+Debes devolver EXACTAMENTE un array JSON de 3 strings.
+Cada string debe ser una idea breve (máximo 5 palabras).
+
+Formato REQUERIDO (sin texto adicional):
+["idea 1", "idea 2", "idea 3"]
+
+Ejemplo correcto:
+["Automatizar con scripts", "Integrar con Zapier", "Crear dashboard visual"]
+
+NO devuelvas objetos, solo strings.
+NO añadas texto explicativo antes o después del JSON.`;
 
               const responseText = await callAI({
                 prompt: prompt,
+                systemInstruction: systemInstruction,
                 isJson: true
               });
 
               let ideas;
               try {
-                ideas = JSON.parse(responseText);
-              } catch (parseError) {
-                console.error("Error parsing brainstorm response:", parseError, "Response:", responseText);
-                throw new Error("Error al parsear las ideas generadas");
+                let parsed = JSON.parse(responseText);
+
+                // Debug logging
+                console.log("[Brainstorm] Respuesta parseada:", parsed);
+                console.log("[Brainstorm] Tipo:", typeof parsed);
+                console.log("[Brainstorm] Es array:", Array.isArray(parsed));
+
+                // Validar estructura
+                // Caso 1: Si es un objeto con propiedad 'ideas' o similar
+                if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  const possibleArrays = ['ideas', 'items', 'suggestions', 'list', 'data'];
+                  let found = false;
+
+                  for (const key of possibleArrays) {
+                    if (Array.isArray(parsed[key])) {
+                      console.warn(`[Brainstorm] Extrayendo array de propiedad '${key}'`);
+                      parsed = parsed[key];
+                      found = true;
+                      break;
+                    }
+                  }
+
+                  if (!found) {
+                    throw new Error(`Respuesta es un objeto, no un array. Keys: ${Object.keys(parsed).join(', ')}`);
+                  }
+                }
+
+                // Caso 2: Si no es array, error
+                if (!Array.isArray(parsed)) {
+                  throw new Error(`Respuesta no es un array. Tipo: ${typeof parsed}`);
+                }
+
+                // Caso 3: Si está vacío
+                if (parsed.length === 0) {
+                  throw new Error("El array de ideas está vacío");
+                }
+
+                // Normalizar: Convertir todo a strings
+                ideas = parsed.map((item, i) => {
+                  // Si es string, OK
+                  if (typeof item === 'string') {
+                    return item.trim();
+                  }
+
+                  // Si es objeto, intentar extraer texto
+                  if (typeof item === 'object' && item !== null) {
+                    const text = item.title || item.idea || item.text || item.name || item.description;
+                    if (text && typeof text === 'string') {
+                      console.warn(`[Brainstorm] Item ${i} es objeto, extrayendo texto de propiedad`);
+                      return text.trim();
+                    }
+
+                    console.warn(`[Brainstorm] Item ${i} es objeto sin propiedad de texto, usando JSON.stringify`);
+                    return JSON.stringify(item);
+                  }
+
+                  // Convertir cualquier otra cosa a string
+                  return String(item);
+                }).filter(text => text.length > 0);
+
+                // Validar que tengamos al menos 1 idea
+                if (ideas.length === 0) {
+                  throw new Error("No se pudieron extraer ideas válidas del array");
+                }
+
+                console.log(`[Brainstorm] ${ideas.length} ideas válidas extraídas:`, ideas);
+
+              } catch (parseError: any) {
+                console.error("[Brainstorm] Error completo:", parseError);
+                console.error("[Brainstorm] Respuesta recibida:", responseText);
+
+                // Intentar extraer JSON de markdown
+                const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/);
+                if (jsonMatch) {
+                  console.warn("[Brainstorm] Detectado JSON en markdown, reintentando...");
+                  try {
+                    const extracted = JSON.parse(jsonMatch[1]);
+                    if (Array.isArray(extracted)) {
+                      ideas = extracted.map(String);
+                      console.log("[Brainstorm] ✅ Extraído de markdown exitosamente");
+                    }
+                  } catch {
+                    throw new Error(`Error parseando JSON dentro de markdown: ${parseError.message}`);
+                  }
+                } else {
+                  throw new Error(`Error parseando respuesta como JSON: ${parseError.message}. Respuesta: ${responseText.substring(0, 100)}...`);
+                }
               }
 
               saveSnapshot();
@@ -1764,9 +1999,26 @@ const App = () => {
                 return [...prev, ...uniqueConns];
               });
               wakeSimulation();
-            } catch (e) {
-              console.error(e);
-              alert("Error generando ideas");
+            } catch (e: any) {
+              console.error("[Brainstorm] Error completo:", e);
+
+              // Construir mensaje de error útil
+              let errorMessage = "Error generando ideas";
+
+              if (e.message) {
+                if (e.message.includes('parsear') || e.message.includes('JSON')) {
+                  errorMessage = "La IA devolvió un formato inválido. Intenta de nuevo.";
+                } else if (e.message.includes('array')) {
+                  errorMessage = "La IA no devolvió una lista de ideas. Intenta de nuevo.";
+                } else if (e.message.includes('API') || e.message.includes('fetch')) {
+                  errorMessage = "Error de conexión con el servidor. Verifica tu internet.";
+                } else {
+                  errorMessage = `Error: ${e.message}`;
+                }
+              }
+
+              console.error("[Brainstorm] Mensaje para usuario:", errorMessage);
+              alert(errorMessage);
             } finally {
               setIsProcessing(false);
             }
@@ -1838,6 +2090,21 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
       const errors: string[] = [];
 
       for (const file of files) {
+        // Validar extensión del archivo
+        const allowedExtensions = ['.pdf', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png', '.gif', '.zip', '.rar'];
+        const fileExt = '.' + (file.name.split('.').pop()?.toLowerCase() || '');
+
+        if (!allowedExtensions.includes(fileExt)) {
+          errors.push(`"${file.name}" tiene una extensión no permitida (${fileExt})`);
+          continue;
+        }
+
+        // Limitar total de archivos por nodo
+        if ((node.attachments || []).length + newAttachments.length >= 10) {
+          errors.push('Máximo 10 archivos por nodo');
+          break;
+        }
+
         // Validar que el archivo tenga nombre
         if (!file.name || file.name.trim().length === 0) {
           errors.push("Un archivo no tiene nombre válido");
