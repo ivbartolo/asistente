@@ -66,8 +66,9 @@ export default async function handler(req: Request) {
       });
     }
 
-    // Usar gemini-2.0-flash-exp que es el modelo más reciente
-    const model = "gemini-2.0-flash-exp";
+    // Usar gemini-1.5-flash-latest como modelo principal (más estable y disponible)
+    // gemini-2.0-flash-exp puede no estar disponible en todas las regiones/API keys
+    const model = "gemini-1.5-flash-latest";
     const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
     
     const contents = [];
@@ -97,12 +98,12 @@ export default async function handler(req: Request) {
     // Agregar generationConfig solo si es necesario y con la estructura correcta
     if (isJson) {
         body.generationConfig = {
-            responseMimeType: "application/json"
+            response_mime_type: "application/json"
         };
     }
 
     if (systemInstruction) {
-        body.systemInstruction = {
+        body.system_instruction = {
             parts: [{ text: systemInstruction }]
         };
     }
@@ -121,10 +122,10 @@ export default async function handler(req: Request) {
     if (response.status === 404) {
       console.log('[API] Modelo no encontrado, intentando alternativas...');
       const modelAlternatives = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro"
+        "gemini-1.5-flash",  // Modelo estable más común
+        "gemini-1.5-pro",   // Modelo más potente
+        "gemini-2.0-flash", // Si está disponible
+        "gemini-2.0-flash-exp" // Experimental, último recurso
       ];
       
       let success = false;

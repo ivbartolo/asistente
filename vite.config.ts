@@ -151,12 +151,12 @@ function apiPlugin() {
               // Agregar generationConfig solo si es necesario y con la estructura correcta
               if (isJson) {
                 requestBody.generationConfig = {
-                  responseMimeType: "application/json"
+                  response_mime_type: "application/json"
                 };
               }
 
               if (systemInstruction) {
-                requestBody.systemInstruction = {
+                requestBody.system_instruction = {
                   parts: [{ text: systemInstruction }]
                 };
               }
