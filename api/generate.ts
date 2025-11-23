@@ -163,138 +163,148 @@ export default async function handler(req: Request) {
       if (!success) {
         // Si todos fallan, intentar con v1beta como último recurso
         console.log('[API] Intentando con v1beta como último recurso...');
-        const v1betaUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        try {
-          const v1betaResponse = await fetch(v1betaUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-          });
-
-          if (v1betaResponse.ok) {
-            console.log('[API] Éxito con v1beta');
-            response = v1betaResponse;
-            success = true;
-          }
-        } catch (v1betaError) {
-          console.error('[API] Error con v1beta:', v1betaError);
-        }
+        // ... (código existente) ...
       }
 
+      // Si después de todo sigue sin éxito, loguear el error original detallado
       if (!success) {
-        return new Response(JSON.stringify({
-          error: `Model ${model} not found (404). Tried alternatives: ${modelAlternatives.join(', ')}`,
-          suggestion: 'Verify your API key has access to Gemini models'
-        }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' }
+        const errorText = await response.text();
+        console.error('[API] FATAL: Todos los modelos fallaron. Respuesta final:', errorText.substring(0, 500));
+        // Restaurar response para que el cliente reciba el error
+        return new Response(errorText, { status: response.status, headers: { 'Content-Type': 'application/json' } });
+      }
+      const v1betaUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      try {
+        const v1betaResponse = await fetch(v1betaUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody)
         });
+
+        if (v1betaResponse.ok) {
+          console.log('[API] Éxito con v1beta');
+          response = v1betaResponse;
+          success = true;
+        }
+      } catch (v1betaError) {
+        console.error('[API] Error con v1beta:', v1betaError);
       }
     }
+
+    if (!success) {
+      return new Response(JSON.stringify({
+        error: `Model ${model} not found (404). Tried alternatives: ${modelAlternatives.join(', ')}`,
+        suggestion: 'Verify your API key has access to Gemini models'
+      }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
 
     // Manejar otros errores de respuesta
     if (!response.ok) {
-      let errorData;
-      try {
-        errorData = await response.json();
-      } catch {
-        errorData = {
-          error: `API Error: ${response.status} ${response.statusText}`,
-          message: 'Failed to parse error response from Gemini API'
-        };
-      }
-
-      // Mensajes de error más descriptivos
-      if (response.status === 401) {
-        return new Response(JSON.stringify({
-          error: 'Invalid API Key. Please check your GEMINI_API_KEY or GOOGLE_API_KEY environment variable in Vercel.'
-        }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (response.status === 429) {
-        return new Response(JSON.stringify({
-          error: 'Rate limit exceeded. Please try again later.'
-        }), {
-          status: 429,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      return new Response(JSON.stringify({
-        error: errorData.error || errorData.message || 'Error from Gemini API',
-        details: errorData
-      }), {
-        status: response.status,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    // Parsear respuesta exitosa
-    let data;
+    let errorData;
     try {
-      data = await response.json();
-    } catch (parseError) {
+      errorData = await response.json();
+    } catch {
+      errorData = {
+        error: `API Error: ${response.status} ${response.statusText}`,
+        message: 'Failed to parse error response from Gemini API'
+      };
+    }
+
+    // Mensajes de error más descriptivos
+    if (response.status === 401) {
       return new Response(JSON.stringify({
-        error: 'Invalid JSON response from Gemini API'
+        error: 'Invalid API Key. Please check your GEMINI_API_KEY or GOOGLE_API_KEY environment variable in Vercel.'
       }), {
-        status: 500,
+        status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    // Validar estructura de respuesta
-    if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
+    if (response.status === 429) {
       return new Response(JSON.stringify({
-        error: 'Invalid response structure from Gemini API',
-        details: data
+        error: 'Rate limit exceeded. Please try again later.'
       }), {
-        status: 500,
+        status: 429,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    // Extraer el texto de la respuesta de Gemini
-    const candidate = data.candidates[0];
-    if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
-      return new Response(JSON.stringify({
-        error: 'No content in Gemini API response',
-        details: data
-      }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    const text = candidate.content.parts[0]?.text || "";
-
-    if (!text) {
-      return new Response(JSON.stringify({
-        error: 'Empty response from Gemini API',
-        details: data
-      }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    return new Response(JSON.stringify({ text }), {
-      status: 200,
+    return new Response(JSON.stringify({
+      error: errorData.error || errorData.message || 'Error from Gemini API',
+      details: errorData
+    }), {
+      status: response.status,
       headers: { 'Content-Type': 'application/json' }
     });
+  }
 
-  } catch (error: any) {
-    console.error('[API] Error interno:', error);
+  // Parsear respuesta exitosa
+  let data;
+  try {
+    data = await response.json();
+  } catch (parseError) {
     return new Response(JSON.stringify({
-      error: 'Internal Server Error',
-      message: error?.message || String(error)
+      error: 'Invalid JSON response from Gemini API'
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
     });
   }
+
+  // Validar estructura de respuesta
+  if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
+    return new Response(JSON.stringify({
+      error: 'Invalid response structure from Gemini API',
+      details: data
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // Extraer el texto de la respuesta de Gemini
+  const candidate = data.candidates[0];
+  if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
+    return new Response(JSON.stringify({
+      error: 'No content in Gemini API response',
+      details: data
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  const text = candidate.content.parts[0]?.text || "";
+
+  if (!text) {
+    return new Response(JSON.stringify({
+      error: 'Empty response from Gemini API',
+      details: data
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  return new Response(JSON.stringify({ text }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+} catch (error: any) {
+  console.error('[API] Error interno:', error);
+  return new Response(JSON.stringify({
+    error: 'Internal Server Error',
+    message: error?.message || String(error)
+  }), {
+    status: 500,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
 }
