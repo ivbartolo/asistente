@@ -73,12 +73,12 @@ export default async function handler(req: Request) {
     console.log('[API] API Key válida (sanitized). Preparando petición a Gemini...');
 
     // Configuración del modelo
-    // Usamos gemini-1.5-flash (sin latest) para máxima compatibilidad
-    const model = "gemini-1.5-flash";
+    // Usamos gemini-pro que está disponible en TODAS las API keys
+    const model = "gemini-pro";
     const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${cleanApiKey}`;
 
     console.log('[API] Modelo:', model);
-    console.log('[API] URL (sin key):', apiUrl.replace(apiKey, 'API_KEY_HIDDEN'));
+    console.log('[API] URL (sin key):', apiUrl.replace(cleanApiKey, 'API_KEY_HIDDEN'));
 
     // Construir el body para la API de Gemini
     const contents = [];
@@ -127,9 +127,7 @@ export default async function handler(req: Request) {
     if (!response.ok && (response.status === 404 || response.status === 400)) {
       console.log(`[API] Error ${response.status} con modelo principal. Intentando alternativas...`);
       const modelAlternatives = [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-pro"
+        "gemini-1.0-pro"
       ];
 
       let success = false; // Initialize success flag
