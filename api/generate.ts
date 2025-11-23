@@ -106,12 +106,9 @@ export default async function handler(req: Request) {
       contents: contents
     };
 
-    // Opciones de generación si es JSON
-    if (isJson) {
-      requestBody.generationConfig = {
-        response_mime_type: "application/json"
-      };
-    }
+    // NOTA: response_mime_type removido temporalmente porque causa 400 en todos los modelos
+    // Esto puede ser una limitación de la API key o región
+    // El cliente puede parsear JSON desde texto plano de todas formas
 
     console.log('[API] Enviando petición a Gemini API...');
     let response = await fetch(apiUrl, {
