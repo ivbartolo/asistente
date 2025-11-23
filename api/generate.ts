@@ -123,9 +123,9 @@ export default async function handler(req: Request) {
     });
     console.log('[API] Respuesta de Gemini, status:', response.status, response.statusText);
 
-    // Si es 404, intentar con diferentes variantes del modelo
-    if (response.status === 404) {
-      console.log('[API] Modelo no encontrado (404), intentando alternativas...');
+    // Si es 404 o 400 (Bad Request, posible modelo inválido), intentar con modelos alternativos
+    if (!response.ok && (response.status === 404 || response.status === 400)) {
+      console.log(`[API] Error ${response.status} con modelo principal. Intentando alternativas...`);
       const modelAlternatives = [
         "gemini-2.0-flash",
         "gemini-1.5-flash",

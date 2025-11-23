@@ -161,7 +161,12 @@ const callAI = async (params: { prompt: string, image?: string, systemInstructio
 
       if (typeof errorMessage !== 'string') {
         try {
-          errorMessage = JSON.stringify(errorMessage);
+          // Si es un objeto Error nativo, JSON.stringify devuelve {}, así que extraemos sus propiedades
+          if (errorMessage instanceof Error) {
+            errorMessage = `${errorMessage.name}: ${errorMessage.message}`;
+          } else {
+            errorMessage = JSON.stringify(errorMessage, null, 2);
+          }
         } catch {
           errorMessage = String(errorMessage);
         }
