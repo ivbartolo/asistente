@@ -74,6 +74,13 @@ export default async function handler(req: Request) {
     const cleanApiKey = apiKey.trim().replace(/^["']|["']$/g, '');
 
     console.log('[API] API Key válida (sanitized). Preparando petición a Gemini...');
+    console.log('[API] Request details:', {
+      hasPrompt: !!prompt,
+      hasImage: !!image,
+      hasAudio: !!audio,
+      mimeType: audio ? mimeType : 'N/A',
+      promptLength: prompt?.length || 0
+    });
 
     // Configuración del modelo alineada con el entorno local (modelo estable)
     const apiVersion = 'v1beta'; // Usar v1beta para soporte multimodal completo
@@ -87,10 +94,8 @@ export default async function handler(req: Request) {
     // Esto evita problemas de compatibilidad con v1beta
     let finalPrompt = prompt || "";
 
-    // Si solo hay audio, agregamos un prompt por defecto para guiar al modelo
-    if (audio && (!finalPrompt || finalPrompt.trim() === "")) {
-      finalPrompt = "Transcribe este audio y extrae la idea principal o acción solicitada. Responde solo con el texto transcrito o la respuesta a la pregunta.";
-    }
+    // IMPORTANTE: Ya NO usamos un prompt por defecto cuando hay audio sin prompt
+    // El cliente debe enviar el prompt completo con instrucciones para JSON
 
     if (systemInstruction) {
       finalPrompt = `System Instruction: ${systemInstruction}\n\nUser Request: ${finalPrompt}`;

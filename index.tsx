@@ -1407,15 +1407,25 @@ const App = () => {
 
       // Construir Prompt Unificado
       let fullPrompt = text;
+
+      // CRÍTICO: Si solo hay audio sin texto, necesitamos un prompt que pida JSON
+      if (audioData && !text) {
+        fullPrompt = "Transcribe el audio y estructura la idea como JSON siguiendo el formato solicitado en las instrucciones del sistema.";
+        console.log("[ProcessInput] Audio sin texto - usando prompt automático para JSON");
+      }
+
       if (parentNode) {
+        const inputDesc = audioData ? "NUEVA IDEA (de audio transcrito)" : "NUEVA IDEA (INPUT USUARIO)";
+        const inputText = audioData && !text ? "Transcribe el audio y estructura la idea" : text;
+
         fullPrompt = `
         CONTEXTO (La nueva idea es hija de este nodo):
         - Título Padre: "${parentNode.title}"
         - Resumen Padre: "${parentNode.summary}"
         - Categoría Padre: "${parentNode.category}"
 
-        NUEVA IDEA (INPUT USUARIO):
-        "${text}"
+        ${inputDesc}:
+        "${inputText}"
         
         Instrucción: Genera el JSON para la NUEVA IDEA interpretándola dentro del contexto del padre.
     `;
