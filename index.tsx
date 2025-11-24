@@ -1100,7 +1100,50 @@ const App = () => {
     }
 
     setIsRecording(true);
-    setRecognitionStatus("Conectando al servicio de voz...");
+    setRecognitionStatus("Solicitando permisos del micrófono...");
+
+    // Verificar permisos explícitamente antes de solicitar acceso al micrófono
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+    // Intentar verificar permisos si la API está disponible
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        console.log("[Speech] Estado de permisos del micrófono:", permissionStatus.state);
+
+        if (permissionStatus.state === 'denied') {
+          setIsRecording(false);
+          setRecognitionStatus("");
+
+          let denyMessage = "❌ Permisos de micrófono denegados\n\n";
+          if (isMobile) {
+            denyMessage += "Para usar el reconocimiento de voz en tu móvil:\n\n";
+            denyMessage += "1. Ve a Configuración de tu navegador\n";
+            denyMessage += "2. Busca 'Permisos del sitio' o 'Configuración de sitios'\n";
+            denyMessage += "3. Encuentra 'asistente-six.vercel.app'\n";
+            denyMessage += "4. Activa los permisos del Micrófono\n";
+            denyMessage += "5. Recarga esta página\n\n";
+          } else {
+            denyMessage += "Haz clic en el ícono del candado (🔒) en la barra de direcciones\n";
+            denyMessage += "y permite el acceso al micrófono.\n\n";
+          }
+
+          const useManual = confirm(denyMessage + "¿Quieres escribir tu idea manualmente?");
+          if (useManual) {
+            const text = prompt("Escribe tu idea:");
+            if (text && text.trim()) {
+              processInput(text.trim());
+            }
+          }
+          return;
+        }
+      } catch (permError) {
+        console.log("[Speech] No se pudo verificar permisos:", permError);
+        // Continuar de todos modos, intentar solicitar permisos
+      }
+    }
+
+    setRecognitionStatus("Conectando al micrófono...");
 
     // startAudioAnalysis ya solicita permisos, no necesitamos hacerlo dos veces
     try {
@@ -1112,20 +1155,53 @@ const App = () => {
       setIsRecording(false);
       setRecognitionStatus("");
 
-      let errorMsg = "No se pudo acceder al micrófono. ";
+      let errorMsg = "No se pudo acceder al micrófono.\n\n";
+
       if (audioError.name === 'NotAllowedError' || audioError.name === 'PermissionDeniedError') {
-        errorMsg += "Por favor, permite el acceso al micrófono en la configuración del navegador.";
+        if (isMobile) {
+          errorMsg = "❌ Acceso al micrófono denegado\n\n";
+          errorMsg += "Para habilitar el micrófono en tu móvil:\n\n";
+          errorMsg += "1. Toca el ícono de información (ⓘ) o candado (🔒) junto a la URL\n";
+          errorMsg += "2. Busca 'Permisos' o 'Configuración del sitio'\n";
+          errorMsg += "3. Encuentra la opción 'Micrófono'\n";
+          errorMsg += "4. Cambia a 'Permitir'\n";
+          errorMsg += "5. Recarga la página\n\n";
+          errorMsg += "O escribe tu idea manualmente.";
+        } else {
+          errorMsg += "Haz clic en el ícono del candado (🔒) en la barra de direcciones ";
+          errorMsg += "y permite el acceso al micrófono.";
+        }
       } else if (audioError.name === 'NotFoundError') {
-        errorMsg += "No se encontró ningún micrófono conectado. Verifica que tu micrófono esté conectado y funcionando.";
+        errorMsg += "No se encontró ningún micrófono.\n\n";
+        if (isMobile) {
+          errorMsg += "Verifica que:\n";
+          errorMsg += "• Tu dispositivo tenga micrófono\n";
+          errorMsg += "• Ninguna otra aplicación esté usando el micrófono\n";
+          errorMsg += "• El micrófono no esté bloqueado físicamente";
+        } else {
+          errorMsg += "Verifica que tu micrófono esté conectado y funcionando.";
+        }
       } else if (audioError.name === 'NotReadableError') {
-        errorMsg += "El micrófono está siendo usado por otra aplicación. Cierra otras aplicaciones que puedan estar usando el micrófono.";
+        errorMsg += "El micrófono está siendo usado por otra aplicación.\n\n";
+        if (isMobile) {
+          errorMsg += "Cierra otras aplicaciones que puedan estar usando el micrófono ";
+          errorMsg += "(grabadora de voz, WhatsApp, etc.)";
+        } else {
+          errorMsg += "Cierra otras aplicaciones que puedan estar usando el micrófono.";
+        }
       } else if (audioError.name === 'OverconstrainedError') {
         errorMsg += "El micrófono no cumple con los requisitos necesarios.";
       } else {
         errorMsg += `Error: ${audioError.message || 'Error desconocido'}`;
       }
 
-      alert(errorMsg);
+      const useManual = confirm(errorMsg + "\n\n¿Quieres escribir tu idea manualmente?");
+      if (useManual) {
+        const text = prompt("Escribe tu idea:");
+        if (text && text.trim()) {
+          processInput(text.trim());
+        }
+      }
       return;
     }
 
@@ -1376,14 +1452,18 @@ const App = () => {
       recognitionRef.current = null;
 
       const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      let errorMessage = "No se pudo reconocer el audio. ";
+      let errorMessage = "🎤 No se pudo reconocer el audio.\n\n";
 
       if (isMobile) {
-        errorMessage += "\n\nSugerencias:\n";
+        errorMessage += "¿El micrófono tiene permisos?\n\n";
+        errorMessage += "Si es la primera vez que usas el micrófono:\n";
+        errorMessage += "• Verifica que hayas dado permisos cuando se solicitaron\n";
+        errorMessage += "• Mira si hay un mensaje en la parte superior del navegador\n\n";
+        errorMessage += "Otras sugerencias:\n";
         errorMessage += "• Habla más cerca del micrófono\n";
         errorMessage += "• Reduce el ruido de fondo\n";
         errorMessage += "• Habla más claro y pausado\n";
-        errorMessage += "• Verifica que el micrófono no esté bloqueado";
+        errorMessage += "• Verifica que ninguna app esté usando el micrófono";
       } else {
         errorMessage += "Por favor, intenta hablar más claro o más cerca del micrófono.";
       }
