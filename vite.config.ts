@@ -151,9 +151,9 @@ function apiPlugin() {
                 contents: contents
               };
 
-              // Usamos SIEMPRE v1 y el modelo estable probado
-              const apiVersion = 'v1';
-              const model = 'gemini-1.5-flash-latest';
+              // Usamos v1beta para soporte de modelos más recientes como gemini-2.0-flash
+              const apiVersion = 'v1beta';
+              const model = 'gemini-2.0-flash';
               const apiUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
 
               console.log('[API Plugin] API Version:', apiVersion);

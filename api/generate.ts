@@ -77,7 +77,7 @@ export default async function handler(req: Request) {
 
     // Configuración del modelo alineada con el entorno local (modelo estable)
     const apiVersion = 'v1beta'; // Usar v1beta para soporte multimodal completo
-    const primaryModel = 'gemini-1.5-flash'; // Flash es mejor para audio y rapidez
+    const primaryModel = 'gemini-2.0-flash'; // Flash es mejor para audio y rapidez
 
     // Construir el body para la API de Gemini
     const contents = [];
