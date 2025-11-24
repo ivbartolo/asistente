@@ -596,7 +596,6 @@ const App = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [recognitionRetryCount, setRecognitionRetryCount] = useState(0);
   const [recognitionStatus, setRecognitionStatus] = useState<string>("");
 
   // Audio Visualizer State
@@ -605,7 +604,6 @@ const App = () => {
   const audioStreamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const recognitionRef = useRef<any>(null);  // Para Speech Recognition
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
@@ -952,8 +950,18 @@ const App = () => {
       console.log("[Audio] Acceso al micrófono concedido");
 
       audioStreamRef.current = stream;
-      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioContext();
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error('Este navegador no soporta AudioContext.');
+      }
+      const audioCtx = new AudioContextClass();
+      if (audioCtx.state === 'suspended') {
+        try {
+          await audioCtx.resume();
+        } catch (resumeError) {
+          console.warn("[Audio] No se pudo reanudar AudioContext automáticamente:", resumeError);
+        }
+      }
       audioContextRef.current = audioCtx;
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 64;
@@ -1006,6 +1014,170 @@ const App = () => {
     analyserRef.current = null;
     setAudioData(new Uint8Array(0));
     console.log("[Audio] Análisis de audio detenido");
+  };
+
+  const getSupportedMimeType = () => {
+    if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+      return '';
+    }
+    const mimeTypes = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg',
+      'audio/wav'
+    ];
+    return mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+  };
+
+  const isSecureOrigin = () => {
+    if (typeof window === 'undefined') return false;
+    if (window.isSecureContext || location.protocol === 'https:') return true;
+    const allowedHosts = ['localhost', '127.0.0.1'];
+    return allowedHosts.includes(location.hostname);
+  };
+
+  const promptManualIdea = () => {
+    const manualText = prompt("Tu navegador no puede usar el micrófono. Escribe tu idea:");
+    if (manualText && manualText.trim()) {
+      processInput(manualText.trim());
+    } else if (manualText !== null) {
+      alert("No ingresaste ninguna idea. Intenta de nuevo.");
+    }
+  };
+
+  const ensureMicPermission = async () => {
+    if (!navigator.permissions || !navigator.permissions.query) return;
+    try {
+      const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+      if (permissionStatus.state === 'denied') {
+        throw new Error('MIC_PERMISSION_DENIED');
+      }
+    } catch (error: any) {
+      if (error?.message === 'MIC_PERMISSION_DENIED') {
+        throw error;
+      }
+      // Safari iOS no soporta navigator.permissions para micrófono: ignoramos ese error.
+    }
+  };
+
+  const mapMicErrorToMessage = (error: any): string => {
+    if (!error) return "No se pudo usar el micrófono.";
+    if (typeof error === 'string') return error;
+
+    if (error.message === 'MIC_PERMISSION_DENIED') {
+      return "El micrófono está bloqueado para este sitio. Habilítalo desde el icono de candado del navegador y recarga la página.";
+    }
+    if (error.message === 'MEDIA_RECORDER_UNSUPPORTED') {
+      return "Este navegador no soporta grabación de audio. Usa la versión más reciente de Chrome, Edge o Safari, o dicta desde escritorio.";
+    }
+
+    const name = error.name || '';
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+      return "Debes conceder permiso de micrófono para poder grabar.";
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return "No se detectó ningún micrófono. Conecta uno y vuelve a intentarlo.";
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return "Otra aplicación está usando el micrófono. Ciérrala e inténtalo nuevamente.";
+    }
+    if (name === 'OverconstrainedError') {
+      return "No hay dispositivo de audio compatible con la configuración solicitada.";
+    }
+
+    return error.message || "Error desconocido al acceder al micrófono.";
+  };
+
+  const startRecording = async () => {
+    try {
+      await startAudioAnalysis();
+
+      const stream = audioStreamRef.current;
+      if (!stream) {
+        throw new Error("No se pudo inicializar el micrófono.");
+      }
+
+      if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined') {
+        throw new Error('MEDIA_RECORDER_UNSUPPORTED');
+      }
+
+      const mimeType = getSupportedMimeType();
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      } catch (recorderError) {
+        console.warn("[Audio] MediaRecorder no aceptó el mimeType seleccionado, reintentando sin opciones explícitas.", recorderError);
+        recorder = new MediaRecorder(stream);
+      }
+
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = (event: any) => {
+        console.error("[Audio] MediaRecorder error:", event?.error || event);
+        stopAudioAnalysis();
+        mediaRecorderRef.current = null;
+        audioChunksRef.current = [];
+        setIsRecording(false);
+        setRecognitionStatus("");
+        alert(mapMicErrorToMessage(event?.error || event));
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      setRecognitionStatus("Grabando... (toca para terminar)");
+    } catch (error) {
+      stopAudioAnalysis();
+      setIsRecording(false);
+      throw error;
+    }
+  };
+
+  const stopRecording = () => {
+    return new Promise<{ audio: string, mimeType: string }>((resolve, reject) => {
+      const mediaRecorder = mediaRecorderRef.current;
+      if (!mediaRecorder) {
+        reject(new Error("No hay una grabación activa."));
+        return;
+      }
+
+      mediaRecorder.onstop = () => {
+        const mimeType = mediaRecorder.mimeType || getSupportedMimeType() || 'audio/webm';
+        mediaRecorderRef.current = null;
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        audioChunksRef.current = [];
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          stopAudioAnalysis();
+          resolve({ audio: reader.result as string, mimeType });
+        };
+        reader.onerror = () => {
+          stopAudioAnalysis();
+          reject(new Error("Error al leer la grabación."));
+        };
+        reader.readAsDataURL(audioBlob);
+        setIsRecording(false);
+      };
+
+      mediaRecorder.onerror = (event: any) => {
+        console.error("[Audio] Error al detener MediaRecorder:", event?.error || event);
+        mediaRecorderRef.current = null;
+        audioChunksRef.current = [];
+        stopAudioAnalysis();
+        setIsRecording(false);
+        reject(event?.error || new Error("Error en la grabación."));
+      };
+
+      setRecognitionStatus("Procesando audio...");
+      mediaRecorder.stop();
+    });
   };
 
   // -- EXPORT HELPERS --
@@ -1431,168 +1603,69 @@ const App = () => {
     }
   };
 
-  const MAX_RECOGNITION_RETRIES = 3;
-
   const handleMicClick = async () => {
     console.log("[Speech] handleMicClick llamado, isRecording:", isRecording);
 
-    // Verificar soporte del navegador
-    const hasSpeechRecognition = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
-    console.log("[Speech] Soporte de reconocimiento de voz:", hasSpeechRecognition);
-    console.log("[Speech] webkitSpeechRecognition:", 'webkitSpeechRecognition' in window);
-    console.log("[Speech] SpeechRecognition:", 'SpeechRecognition' in window);
-
-    if (!hasSpeechRecognition) {
-      const text = prompt("Tu navegador no soporta dictado nativo simple. Escribe tu idea:");
-      if (text && text.trim()) {
-        processInput(text.trim());
-      } else if (text !== null) {
-        alert("No ingresaste ninguna idea. Intenta de nuevo.");
-      }
-      return;
-    }
-
-    // Verificar que getUserMedia esté disponible
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      console.error("[Speech] getUserMedia no está disponible");
-      alert("Tu navegador no soporta acceso al micrófono. Por favor, usa Chrome, Edge o Safari.");
+    if (isProcessing) {
+      console.warn("[Speech] Ya se está procesando una idea. Espera antes de volver a grabar.");
       return;
     }
 
     if (isRecording) {
-      setIsRecording(false);
-      setRecognitionStatus("");
-      stopAudioAnalysis();
-      // Detener reconocimiento si está activo
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          console.log("[Speech] Error al detener:", e);
-        }
-        recognitionRef.current = null;
+      let recordingPayload;
+      try {
+        recordingPayload = await stopRecording();
+      } catch (error) {
+        console.error("[Speech] Error al detener la grabación:", error);
+        alert(mapMicErrorToMessage(error));
+        setRecognitionStatus("");
+        return;
       }
-      const startRecording = async () => {
-        try {
-          // Reuse existing stream if available (from visualizer)
-          let stream = audioStreamRef.current;
-          if (!stream) {
-            await startAudioAnalysis();
-            stream = audioStreamRef.current;
-          }
 
-          if (!stream) throw new Error("No audio stream available");
+      try {
+        await processInput(recordingPayload);
+      } finally {
+        setRecognitionStatus("");
+      }
+      return;
+    }
 
-          // Detect supported mime type
-          const mimeType = [
-            'audio/webm;codecs=opus',
-            'audio/webm',
-            'audio/mp4',
-            'audio/ogg',
-            'audio/wav'
-          ].find(type => MediaRecorder.isTypeSupported(type)) || '';
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.error("[Speech] getUserMedia no está disponible en este navegador.");
+      alert("Tu navegador no soporta acceso al micrófono. Usa Chrome, Edge o Safari actualizado.");
+      promptManualIdea();
+      return;
+    }
 
-          const options = mimeType ? { mimeType } : undefined;
-          console.log("[Audio] Usando mimeType:", mimeType || "default");
+    if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined') {
+      alert("Este navegador no soporta grabación de audio. Dicta desde un navegador actualizado o escribe tu idea manualmente.");
+      promptManualIdea();
+      return;
+    }
 
-          const mediaRecorder = new MediaRecorder(stream, options);
-          mediaRecorderRef.current = mediaRecorder;
-          audioChunksRef.current = [];
+    if (!isSecureOrigin()) {
+      alert("El navegador bloquea el micrófono porque la conexión no es segura (HTTP). Usa https:// (por ejemplo con `npm run dev -- --https`, un túnel como ngrok o despliega en Vercel) o abre la app en localhost.");
+      return;
+    }
 
-          mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-              audioChunksRef.current.push(event.data);
-            }
-          };
+    try {
+      await ensureMicPermission();
+    } catch (error) {
+      alert(mapMicErrorToMessage(error));
+      return;
+    }
 
-          mediaRecorder.start();
-          setIsRecording(true);
-          setRecognitionStatus("Grabando... (Toca para terminar)");
-        } catch (e) {
-          console.error("Error starting recording:", e);
-          alert("No se pudo iniciar la grabación. Verifica los permisos del micrófono.");
-          setIsRecording(false);
-          setRecognitionStatus("");
-        }
-      };
+    try {
+      setRecognitionStatus("Conectando con el micrófono...");
+      await startRecording();
+    } catch (error) {
+      console.error("[Speech] Error al iniciar la grabación:", error);
+      setRecognitionStatus("");
+      alert(mapMicErrorToMessage(error));
+    }
+  };
 
-      const stopRecording = (): Promise<{ audio: string, mimeType: string }> => {
-        return new Promise((resolve, reject) => {
-          const mediaRecorder = mediaRecorderRef.current;
-          if (!mediaRecorder) {
-            reject("No media recorder");
-            return;
-          }
-
-          mediaRecorder.onstop = () => {
-            const mimeType = mediaRecorder.mimeType || 'audio/webm';
-            const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-            console.log("[Audio] Grabación terminada. Tamaño:", audioBlob.size, "Tipo:", mimeType);
-
-            const reader = new FileReader();
-            reader.readAsDataURL(audioBlob);
-            reader.onloadend = () => {
-              const base64String = reader.result as string;
-              resolve({ audio: base64String, mimeType });
-            };
-            reader.onerror = reject;
-          };
-
-          mediaRecorder.stop();
-          setIsRecording(false);
-          setRecognitionStatus("Procesando audio...");
-        });
-      };
-
-      const handleMicClick = async () => {
-        console.log("[Speech] handleMicClick llamado, isRecording:", isRecording);
-
-        if (isProcessing) return;
-
-        if (isRecording) {
-          // STOP RECORDING
-          try {
-            const { audio, mimeType } = await stopRecording();
-            await processInput({ audio, mimeType });
-          } catch (e) {
-            console.error("Error processing audio:", e);
-            alert("Error al procesar el audio.");
-            setRecognitionStatus("");
-          }
-        } else {
-          // START RECORDING
-
-          // Verificar HTTPS
-          if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-            alert("El micrófono requiere HTTPS.");
-            return;
-          }
-
-          // Verificar permisos explícitamente
-          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-          if (navigator.permissions && navigator.permissions.query) {
-            try {
-              const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-              if (permissionStatus.state === 'denied') {
-                let denyMessage = "🚫 PERMISOS BLOQUEADOS\n\n";
-                denyMessage += "Debes habilitar el micrófono manualmente en la configuración del navegador.\n\n";
-                denyMessage += "1. Toca el candado 🔒 junto a la URL\n";
-                denyMessage += "2. Busca 'Permisos' o 'Configuración'\n";
-                denyMessage += "3. Activa el Micrófono\n";
-                denyMessage += "4. Recarga la página";
-                alert(denyMessage);
-                return;
-              }
-            } catch (e) {
-              // Ignore permission query error
-            }
-          }
-
-          await startRecording();
-        }
-      };
-
-      const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
           const file = e.target.files[0];
           const reader = new FileReader();
@@ -2336,10 +2409,6 @@ NO añadas texto explicativo antes o después del JSON.`;
         </div>
       );
     };
-
-
-  };
-
   const container = document.getElementById('root');
   if (!container) throw new Error("Failed to find the root element");
   const root = createRoot(container);
