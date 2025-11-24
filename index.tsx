@@ -1432,7 +1432,26 @@ const App = () => {
 
       let data;
       try {
-        data = JSON.parse(responseText || "{}");
+        // Limpiar markdown code blocks si están presentes
+        let cleanedResponse = responseText || "{}";
+
+        // Remover ```json o ``` del inicio y final
+        cleanedResponse = cleanedResponse.trim();
+        if (cleanedResponse.startsWith('```json')) {
+          cleanedResponse = cleanedResponse.replace(/^```json\s*/i, '');
+        } else if (cleanedResponse.startsWith('```')) {
+          cleanedResponse = cleanedResponse.replace(/^```\s*/, '');
+        }
+
+        if (cleanedResponse.endsWith('```')) {
+          cleanedResponse = cleanedResponse.replace(/\s*```$/, '');
+        }
+
+        cleanedResponse = cleanedResponse.trim();
+
+        console.log("[ProcessInput] Respuesta limpia para parsear:", cleanedResponse.substring(0, 200) + "...");
+
+        data = JSON.parse(cleanedResponse);
 
         // Debug logging
         console.log("[ProcessInput] Respuesta AI parseada:", data);
