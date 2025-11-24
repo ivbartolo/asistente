@@ -84,42 +84,15 @@ const compressImage = async (base64: string, maxWidth = 800, quality = 0.7): Pro
 };
 
 // --- AI HELPER ---
-const callAI = async (params: { prompt: string, image?: string, systemInstruction?: string, isJson?: boolean }) => {
+const callAI = async (params: { prompt: string, image?: string, audio?: string, mimeType?: string, systemInstruction?: string, isJson?: boolean }) => {
   // Nota: process.env no está disponible en el navegador en tiempo de ejecución.
   // Si necesitas desarrollo local, usa import.meta.env.VITE_API_KEY con Vite
   // Por ahora, siempre usamos el modo producción (serverless proxy)
 
-  // 1. Modo Desarrollo Local (comentado - no funciona en navegador)
-  // if (import.meta.env?.VITE_API_KEY) {
-  //   try {
-  //     const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_API_KEY });
-  //     const modelName = params.image ? "gemini-1.5-flash" : "gemini-1.5-flash";
-  //
-  //     const parts: any[] = [{ text: params.prompt }];
-  //     if (params.image) {
-  //       parts.push({ inlineData: { mimeType: "image/jpeg", data: params.image.split(',')[1] } });
-  //     }
-  //
-  //     const config: any = {};
-  //     if (params.systemInstruction) config.systemInstruction = params.systemInstruction;
-  //     if (params.isJson) config.responseMimeType = "application/json";
-  //
-  //     const result = await ai.models.generateContent({
-  //       model: modelName,
-  //       contents: { parts },
-  //       config
-  //     });
-  //     return result.response.text();
-  //   } catch (e) {
-  //     console.error("Local AI Error:", e);
-  //     throw e;
-  //   }
-  // }
-
   // 2. Modo Producción (Serverless Proxy)
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for audio
 
     const response = await fetch('/api/generate', {
       method: 'POST',
@@ -127,11 +100,15 @@ const callAI = async (params: { prompt: string, image?: string, systemInstructio
       body: JSON.stringify({
         prompt: params.prompt,
         image: params.image ? params.image.split(',')[1] : undefined,
+        audio: params.audio ? params.audio.split(',')[1] : undefined,
+        mimeType: params.mimeType,
         systemInstruction: params.systemInstruction,
         isJson: params.isJson
       }),
       signal: controller.signal
     });
+    // ... (rest of callAI)
+
 
     clearTimeout(timeoutId);
 
@@ -226,2069 +203,6 @@ const callAI = async (params: { prompt: string, image?: string, systemInstructio
 };
 
 // --- COMPONENT: APP ---
-
-const App = () => {
-  // -- STATE --
-  const [nodes, setNodes] = useState<IdeaNode[]>([]);
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
-
-  // Selection & Inspection
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null); // Highlighted only
-  const [inspectorNodeId, setInspectorNodeId] = useState<string | null>(null); // Panel open
-  const [isMenuOpen, setIsMenuOpen] = useState(false); // Sidebar state
-
-  // Chat State
-  const [isChatOpen, setIsChatOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    { role: 'model', text: 'Hola. Soy tu asistente de proyecto. Pregúntame sobre costes, tareas pendientes o resúmenes de tus ideas.' }
-  ]);
-  const [isChatLoading, setIsChatLoading] = useState(false);
-
-  // Persistence State
-  const [isLoaded, setIsLoaded] = useState(false);
-
-  const [isRecording, setIsRecording] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [recognitionRetryCount, setRecognitionRetryCount] = useState(0);
-  const [recognitionStatus, setRecognitionStatus] = useState<string>("");
-
-  // Audio Visualizer State
-  const [audioData, setAudioData] = useState<Uint8Array>(new Uint8Array(0));
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioStreamRef = useRef<MediaStream | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const recognitionRef = useRef<any>(null);  // Para Speech Recognition
-
-  // Interaction States
-  const [tempConnection, setTempConnection] = useState<{ sourceId: string, endX: number, endY: number } | null>(null);
-
-  // Undo/Redo History Stacks
-  const pastHistory = useRef<{ nodes: IdeaNode[], connections: Connection[] }[]>([]);
-  const futureHistory = useRef<{ nodes: IdeaNode[], connections: Connection[] }[]>([]);
-  // To force re-render on history change
-  const [historyVersion, setHistoryVersion] = useState(0);
-
-  // --- GESTURE & POINTER REFS ---
-  const canvasRef = useRef<HTMLDivElement>(null);
-
-  // Pointers map for multi-touch logic (ID -> {x, y})
-  const activePointers = useRef(new Map<number, { x: number, y: number }>());
-  const initialPinchDistance = useRef<number | null>(null);
-  const initialViewportScale = useRef<number>(1);
-
-  // Node Interaction Refs
-  const draggingNodeId = useRef<string | null>(null);
-  const dragStartPos = useRef<{ x: number, y: number } | null>(null);
-  const lastNodeTapTime = useRef<{ id: string, time: number } | null>(null);
-  const isDraggingNodeRef = useRef(false);
-
-  // Physics Refs
-  const simulationFrameRef = useRef<number | null>(null);
-  const alphaRef = useRef(0); // Simulation energy (0 to 1)
-
-  // -- PERSISTENCE & INITIALIZATION --
-
-  // Load Initial Data
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const storedNodes = await db.nodes.toArray();
-        const storedConnections = await db.connections.toArray();
-        const meta = await getMetadata();
-
-        if (storedNodes.length > 0) {
-          // Asegurar compatibilidad: inicializar attachments si no existe
-          const normalizedNodes = storedNodes.map(node => ({
-            ...node,
-            attachments: node.attachments || []
-          }));
-          setNodes(normalizedNodes);
-          setConnections(storedConnections);
-          if (meta.viewport) setViewport(meta.viewport);
-          if (meta.selectedNodeId) setSelectedNodeId(meta.selectedNodeId);
-        } else {
-          // No data -> Ready but empty
-          setViewport({ x: 0, y: 0, scale: 1 });
-        }
-        setIsLoaded(true);
-      } catch (e) {
-        console.error("Failed to load DB data", e);
-        setIsLoaded(true);
-      }
-    };
-    loadData();
-  }, []);
-
-  // Save Data on Change
-  useEffect(() => {
-    if (!isLoaded) return;
-
-    // Debounce save
-    const timeoutId = setTimeout(async () => {
-      try {
-        await db.transaction('rw', db.nodes, db.connections, db.metadata, async () => {
-          // Full sync strategy: Clear and bulk add is safest for React state sync
-          // For very large datasets, we would optimize this to only save diffs, 
-          // but for < 10k nodes this is fine and robust.
-          await db.nodes.clear();
-          await db.nodes.bulkAdd(nodes);
-
-          await db.connections.clear();
-          await db.connections.bulkAdd(connections);
-
-          await saveViewport(viewport);
-          await saveSelectedNode(selectedNodeId);
-        });
-      } catch (e) {
-        console.error("Failed to save to DB", e);
-      }
-    }, 1000);
-    return () => clearTimeout(timeoutId);
-  }, [nodes, connections, viewport, selectedNodeId, isLoaded]);
-
-
-  // -- HISTORY MANAGEMENT --
-
-  const saveSnapshot = useCallback(() => {
-    // Limit history size to 50
-    if (pastHistory.current.length > 50) pastHistory.current.shift();
-
-    pastHistory.current.push({
-      nodes: JSON.parse(JSON.stringify(nodes)), // Deep copy
-      connections: JSON.parse(JSON.stringify(connections))
-    });
-    futureHistory.current = []; // Clear redo stack on new action
-    setHistoryVersion(v => v + 1);
-  }, [nodes, connections]);
-
-  const undo = () => {
-    if (pastHistory.current.length === 0) return;
-
-    const previous = pastHistory.current.pop();
-    if (previous) {
-      futureHistory.current.push({
-        nodes: JSON.parse(JSON.stringify(nodes)),
-        connections: JSON.parse(JSON.stringify(connections))
-      });
-
-      setNodes(previous.nodes);
-      setConnections(previous.connections);
-      setHistoryVersion(v => v + 1);
-      wakeSimulation();
-    }
-  };
-
-  const redo = () => {
-    if (futureHistory.current.length === 0) return;
-
-    const next = futureHistory.current.pop();
-    if (next) {
-      pastHistory.current.push({
-        nodes: JSON.parse(JSON.stringify(nodes)),
-        connections: JSON.parse(JSON.stringify(connections))
-      });
-
-      setNodes(next.nodes);
-      setConnections(next.connections);
-      setHistoryVersion(v => v + 1);
-      wakeSimulation();
-    }
-  };
-
-  // -- PHYSICS ENGINE --
-
-  const wakeSimulation = useCallback(() => {
-    alphaRef.current = 1.0; // Reset energy
-    if (!simulationFrameRef.current) {
-      runSimulationStep();
-    }
-  }, []);
-
-  const runSimulationStep = () => {
-    if (alphaRef.current <= 0.05) {
-      simulationFrameRef.current = null;
-      return;
-    }
-
-    setNodes(prevNodes => {
-      const newNodes = prevNodes.map(n => ({ ...n }));
-      const nodeCount = newNodes.length;
-
-      const repulsionRadius = 250;
-      const repulsionStrength = 50 * alphaRef.current;
-      const springLength = 200;
-      const springStrength = 0.05 * alphaRef.current;
-
-      // Repulsion
-      for (let i = 0; i < nodeCount; i++) {
-        if (newNodes[i].id === draggingNodeId.current) continue;
-
-        for (let j = i + 1; j < nodeCount; j++) {
-          if (newNodes[j].id === draggingNodeId.current) continue;
-
-          const n1 = newNodes[i];
-          const n2 = newNodes[j];
-          const dx = n1.x - n2.x;
-          const dy = n1.y - n2.y;
-          const distSq = dx * dx + dy * dy || 1;
-          const dist = Math.sqrt(distSq);
-
-          if (dist < repulsionRadius) {
-            const force = (repulsionRadius - dist) / repulsionRadius;
-            const fx = (dx / dist) * force * repulsionStrength;
-            const fy = (dy / dist) * force * repulsionStrength;
-            n1.x += fx; n1.y += fy;
-            n2.x -= fx; n2.y -= fy;
-          }
-        }
-      }
-
-      // Springs (reading from closure state 'connections', might be slightly stale but ok for visual physics)
-      connections.forEach(conn => {
-        const source = newNodes.find(n => n.id === conn.sourceId);
-        const target = newNodes.find(n => n.id === conn.targetId);
-
-        if (source && target) {
-          if (source.id === draggingNodeId.current && target.id === draggingNodeId.current) return;
-
-          const dx = target.x - source.x;
-          const dy = target.y - source.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-          const displacement = dist - springLength;
-          const force = displacement * springStrength;
-
-          const fx = (dx / dist) * force;
-          const fy = (dy / dist) * force;
-
-          if (source.id !== draggingNodeId.current) { source.x += fx; source.y += fy; }
-          if (target.id !== draggingNodeId.current) { target.x -= fx; target.y -= fy; }
-        }
-      });
-
-      return newNodes;
-    });
-
-    alphaRef.current *= 0.92;
-    simulationFrameRef.current = requestAnimationFrame(runSimulationStep);
-  };
-
-  useEffect(() => {
-    wakeSimulation();
-  }, [nodes.length, connections.length, wakeSimulation]);
-
-  // Cleanup audio resources when component unmounts
-  useEffect(() => {
-    return () => {
-      console.log("[Cleanup] Limpiando recursos de audio");
-      stopAudioAnalysis();
-    };
-  }, []);
-
-
-  // -- TREE TRAVERSAL HELPERS --
-
-  const getRootAncestor = (nodeId: string, allConnections: Connection[]): string => {
-    let currentId = nodeId;
-    let hasParent = true;
-    while (hasParent) {
-      const parentConn = allConnections.find(c => c.targetId === currentId);
-      if (parentConn) {
-        currentId = parentConn.sourceId;
-      } else {
-        hasParent = false;
-      }
-    }
-    return currentId;
-  };
-
-  const getDescendants = (rootId: string, allConnections: Connection[]): Set<string> => {
-    const descendants = new Set<string>();
-    const queue = [rootId];
-
-    while (queue.length > 0) {
-      const curr = queue.shift()!;
-      descendants.add(curr);
-      const children = allConnections
-        .filter(c => c.sourceId === curr)
-        .map(c => c.targetId);
-      queue.push(...children);
-    }
-    return descendants;
-  };
-
-  // -- HELPERS --
-
-  const focusOnNode = (nodeId: string) => {
-    const node = nodes.find(n => n.id === nodeId);
-    if (!node) return;
-    const cx = window.innerWidth / 2;
-    const cy = window.innerHeight / 2;
-    setViewport({
-      x: cx - node.x * 1,
-      y: cy - node.y * 1,
-      scale: 1
-    });
-    setSelectedNodeId(nodeId);
-  };
-
-  const startAudioAnalysis = async () => {
-    // Cerrar stream anterior si existe
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => track.stop());
-      audioStreamRef.current = null;
-    }
-
-    // Cerrar AudioContext anterior si existe
-    if (audioContextRef.current) {
-      try {
-        await audioContextRef.current.close();
-      } catch (e) {
-        console.log("[Audio] Error cerrando AudioContext anterior:", e);
-      }
-      audioContextRef.current = null;
-    }
-
-    // Cancelar animación anterior si existe
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-
-    try {
-      console.log("[Audio] Solicitando acceso al micrófono...");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      console.log("[Audio] Acceso al micrófono concedido");
-
-      audioStreamRef.current = stream;
-      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioContext();
-      audioContextRef.current = audioCtx;
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 64;
-      analyserRef.current = analyser;
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(analyser);
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-      const updateVisualizer = () => {
-        if (!analyserRef.current) return;
-        analyserRef.current.getByteFrequencyData(dataArray);
-        setAudioData(new Uint8Array(dataArray));
-        animationFrameRef.current = requestAnimationFrame(updateVisualizer);
-      };
-      updateVisualizer();
-      console.log("[Audio] Visualizador de audio iniciado");
-    } catch (e: any) {
-      console.error("[Audio] Error al inicializar visualizador de audio:", e);
-      throw e; // Re-lanzar el error para que handleMicClick lo maneje
-    }
-  };
-
-  const stopAudioAnalysis = () => {
-    console.log("[Audio] Deteniendo análisis de audio...");
-
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-
-    if (audioContextRef.current) {
-      try {
-        audioContextRef.current.close().catch((e: any) => {
-          console.log("[Audio] Error cerrando AudioContext:", e);
-        });
-      } catch (e) {
-        console.log("[Audio] Error al intentar cerrar AudioContext:", e);
-      }
-      audioContextRef.current = null;
-    }
-
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => {
-        track.stop();
-        console.log("[Audio] Track detenido:", track.kind);
-      });
-      audioStreamRef.current = null;
-    }
-
-    analyserRef.current = null;
-    setAudioData(new Uint8Array(0));
-    console.log("[Audio] Análisis de audio detenido");
-  };
-
-  // -- EXPORT HELPERS --
-
-  const exportAsImage = () => {
-    const nodesToExport = visibleNodes;
-    const connectionsToExport = visibleConnections;
-
-    if (nodesToExport.length === 0) {
-      alert('No hay nodos visibles para exportar');
-      return;
-    }
-
-    try {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        alert('Tu navegador no soporta exportación de imágenes');
-        return;
-      }
-
-      // Calculate bounds with padding
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      nodesToExport.forEach(n => {
-        minX = Math.min(minX, n.x - 120);
-        minY = Math.min(minY, n.y - 60);
-        maxX = Math.max(maxX, n.x + 120);
-        maxY = Math.max(maxY, n.y + 60);
-      });
-
-      const width = maxX - minX;
-      const height = maxY - minY;
-
-      // Validar tamaño máximo del canvas
-      const MAX_CANVAS_SIZE = 16384; // Límite seguro para la mayoría de navegadores
-      if (width > MAX_CANVAS_SIZE || height > MAX_CANVAS_SIZE) {
-        alert(`El mapa es demasiado grande para exportar (${Math.round(width)}×${Math.round(height)}px).\n\nIntenta:\n• Reducir el zoom\n• Filtrar nodos con búsqueda\n• Exportar en partes más pequeñas\n\nTamaño máximo: ${MAX_CANVAS_SIZE}×${MAX_CANVAS_SIZE}px`);
-        return;
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-
-      // Background
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillRect(0, 0, width, height);
-
-      ctx.translate(-minX, -minY);
-
-      // Draw Connections
-      connectionsToExport.forEach(conn => {
-        const source = nodesToExport.find(n => n.id === conn.sourceId);
-        const target = nodesToExport.find(n => n.id === conn.targetId);
-        if (!source || !target) return;
-
-        ctx.beginPath();
-        const isRootSource = !connections.some(c => c.targetId === source.id);
-
-        const x1 = source.x, y1 = source.y;
-        const x2 = target.x, y2 = target.y;
-        ctx.moveTo(x1, y1);
-        ctx.bezierCurveTo(x1 + (x2 - x1) / 2, y1, x2 - (x2 - x1) / 2, y2, x2, y2);
-
-        ctx.strokeStyle = isRootSource ? "#22d3ee" : "#a3e635";
-        ctx.lineWidth = isRootSource ? 3 : 1.5;
-        ctx.stroke();
-      });
-
-      // Draw Nodes
-      nodesToExport.forEach(node => {
-        const isGlobalRoot = !connections.some(c => c.targetId === node.id);
-
-        const w = 160;
-        const h = isGlobalRoot ? 60 : 40;
-        const x = node.x - w / 2;
-        const y = node.y - h / 2;
-
-        // Node Body
-        ctx.beginPath();
-        if (ctx.roundRect) {
-          ctx.roundRect(x, y, w, h, 999);
-        } else {
-          ctx.rect(x, y, w, h); // Fallback
-        }
-
-        ctx.fillStyle = isGlobalRoot ? '#06b6d4' : '#fef3c7';
-        ctx.fill();
-        ctx.strokeStyle = isGlobalRoot ? '#bae6fd' : '#fcd34d';
-        ctx.lineWidth = isGlobalRoot ? 4 : 2;
-        ctx.stroke();
-
-        // Node Text
-        ctx.fillStyle = isGlobalRoot ? '#ffffff' : '#1e293b';
-        ctx.font = isGlobalRoot ? 'bold 14px sans-serif' : '500 12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-
-        const text = node.title.length > 20 ? node.title.substring(0, 20) + '...' : node.title;
-        ctx.fillText(text, node.x, node.y);
-      });
-
-      const link = document.createElement('a');
-      link.download = 'ideaverse-map.png';
-      link.href = canvas.toDataURL();
-      link.click();
-
-    } catch (error) {
-      console.error('Error al exportar imagen:', error);
-      alert('Error al exportar la imagen. Intenta con menos nodos visibles o reduce el zoom.');
-    }
-  };
-
-  const exportAsMarkdown = () => {
-    const nodesToExport = visibleNodes;
-    const connectionsToExport = visibleConnections;
-
-    const roots = nodesToExport.filter(n => !connectionsToExport.some(c => c.targetId === n.id));
-
-    let md = "# Exportación de Ideas\n\n";
-
-    const printNode = (nodeId: string, level: number) => {
-      const node = nodesToExport.find(n => n.id === nodeId);
-      if (!node) return;
-
-      const indent = "  ".repeat(level);
-      md += `${indent}- **${node.title}** (${node.status === 'scheduled' ? 'Agendado' : 'Borrador'})\n`;
-      if (node.summary && node.summary !== 'Generado por IA') md += `${indent}  > ${node.summary.replace(/\n/g, ' ')}\n`;
-      if (node.cost > 0) md += `${indent}  💰 Coste: ${node.cost}\n`;
-
-      if (node.checklist && node.checklist.length > 0) {
-        node.checklist.forEach(item => {
-          md += `${indent}  - [${item.done ? 'x' : ' '}] ${item.text}\n`;
-        });
-      }
-
-      const children = connectionsToExport
-        .filter(c => c.sourceId === nodeId)
-        .map(c => c.targetId);
-
-      children.forEach(childId => printNode(childId, level + 1));
-    };
-
-    roots.forEach(root => printNode(root.id, 0));
-
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const link = document.createElement('a');
-    link.download = 'ideaverse-export.md';
-    link.href = URL.createObjectURL(blob);
-    link.click();
-  };
-
-  const createManualProject = () => {
-    const title = prompt("Nombre del nuevo proyecto:");
-    if (!title || !title.trim()) return;
-
-    saveSnapshot();
-
-    const cx = window.innerWidth / 2;
-    const cy = window.innerHeight / 2;
-    const startX = (cx - viewport.x) / viewport.scale;
-    const startY = (cy - viewport.y) / viewport.scale;
-
-    const newNode: IdeaNode = {
-      id: Date.now().toString(),
-      x: startX,
-      y: startY,
-      title: title,
-      summary: "Proyecto manual",
-      originalContext: "",
-      category: "Proyecto",
-      cost: 0,
-      links: [],
-      images: [],
-      attachments: [],
-      checklist: [],
-      type: 'text',
-      status: 'draft',
-      createdAt: Date.now()
-    };
-
-    setNodes(prev => [...prev, newNode]);
-    setSelectedNodeId(newNode.id);
-    setIsMenuOpen(false);
-    wakeSimulation();
-  };
-
-  // -- AI SERVICE --
-
-  const processInput = async (input: string | { image: string, prompt?: string }, isImage = false) => {
-    saveSnapshot(); // Save state before AI creates new nodes
-
-    let text = "";
-
-    if (isImage) {
-      const inp = input as { image: string, prompt?: string };
-      text = inp.prompt || "Analiza esta imagen y crea una estructura de idea relevante.";
-    } else {
-      text = typeof input === 'string' ? input : '';
-    }
-
-    text = (text || "").trim();
-
-    if (!text) {
-      alert("No se detectó ningún texto para procesar. Intenta dictar nuevamente o escribe tu idea manualmente.");
-      return;
-    }
-
-    const lowerText = text.toLowerCase();
-    const isExplicitNewRoot =
-      lowerText.includes('crear nueva idea') ||
-      lowerText.includes('nuevo proyecto') ||
-      lowerText.includes('nueva idea principal') ||
-      lowerText.includes('crear proyecto');
-
-    setIsProcessing(true);
-    try {
-      let parentNodeId = isExplicitNewRoot ? null : selectedNodeId;
-      let parentNode = parentNodeId ? nodes.find(n => n.id === parentNodeId) : null;
-
-      if (!parentNode && !isExplicitNewRoot) {
-        parentNodeId = null;
-      }
-
-      // Construir Prompt Unificado
-      let fullPrompt = text;
-      if (parentNode) {
-        fullPrompt = `
-          CONTEXTO (La nueva idea es hija de este nodo):
-          - Título Padre: "${parentNode.title}"
-          - Resumen Padre: "${parentNode.summary}"
-          - Categoría Padre: "${parentNode.category}"
-
-          NUEVA IDEA (INPUT USUARIO):
-          "${text}"
-          
-          Instrucción: Genera el JSON para la NUEVA IDEA interpretándola dentro del contexto del padre.
-      `;
-      }
-
-      const responseText = await callAI({
-        prompt: fullPrompt,
-        image: isImage ? (input as any).image : undefined,
-        systemInstruction: SYSTEM_INSTRUCTION,
-        isJson: true
-      });
-
-      let data;
-      try {
-        data = JSON.parse(responseText || "{}");
-
-        // Debug logging
-        console.log("[ProcessInput] Respuesta AI parseada:", data);
-
-        // Validar y normalizar checklist
-        if (data.checklist) {
-          // Si es string, parsear manualmente
-          if (typeof data.checklist === 'string') {
-            console.warn("[ProcessInput] Checklist es string, parseando:", data.checklist);
-            const items = data.checklist
-              .split(/[,\n]/)
-              .map(s => s.trim())
-              .filter(s => s.length > 0)
-              .map(text => ({ text, done: false }));
-            data.checklist = items;
-          }
-
-          // Si es array de strings, convertir a objetos
-          if (Array.isArray(data.checklist) && data.checklist.length > 0) {
-            if (typeof data.checklist[0] === 'string') {
-              console.warn("[ProcessInput] Convirtiendo array de strings a objetos");
-              data.checklist = data.checklist.map(text => ({ text, done: false }));
-            }
-
-            // Normalizar campos (text, description, task, etc.)
-            data.checklist = data.checklist.map((item, i) => {
-              if (!item || typeof item !== 'object') {
-                console.warn(`[ProcessInput] Item ${i} inválido, skipping`);
-                return null;
-              }
-
-              const text = item.text || item.description || item.task || item.name || String(item);
-              return {
-                text: text.trim(),
-                done: item.done === true
-              };
-            }).filter(item => item !== null && item.text?.length > 0);
-          }
-
-          console.log("[ProcessInput] Checklist normalizado:", data.checklist);
-        }
-
-      } catch (parseError) {
-        console.error("Error parsing AI response:", parseError, "Response:", responseText);
-        throw new Error("La respuesta de la IA no es válida. Intenta de nuevo.");
-      }
-
-      let startX, startY;
-      if (parentNode) {
-        const angle = Math.random() * Math.PI * 2;
-        const distance = 150;
-        startX = parentNode.x + Math.cos(angle) * distance;
-        startY = parentNode.y + Math.sin(angle) * distance;
-      } else {
-        const cx = window.innerWidth / 2;
-        const cy = window.innerHeight / 2;
-        startX = (cx - viewport.x) / viewport.scale;
-        startY = (cy - viewport.y) / viewport.scale;
-      }
-
-      const newNode: IdeaNode = {
-        id: Date.now().toString(),
-        x: startX,
-        y: startY,
-        title: data.title || "Nueva Idea",
-        summary: data.summary || text.substring(0, 50),
-        originalContext: text,
-        category: data.category || "General",
-        cost: data.cost || 0,
-        links: data.links || [],
-        images: isImage ? [(input as any).image] : [],
-        attachments: [],
-        checklist: (() => {
-          try {
-            if (!data.checklist || !Array.isArray(data.checklist)) {
-              return [];
-            }
-
-            return data.checklist
-              .map((item: any, i: number) => {
-                if (!item || typeof item !== 'object') {
-                  console.warn(`[ProcessInput] Skipping invalid checklist item ${i}:`, item);
-                  return null;
-                }
-
-                const text = item.text || '';
-                if (!text || typeof text !== 'string' || text.trim().length === 0) {
-                  console.warn(`[ProcessInput] Skipping item ${i} without text:`, item);
-                  return null;
-                }
-
-                return {
-                  id: `task-${Date.now()}-${i}`,
-                  text: text.trim(),
-                  done: item.done === true
-                };
-              })
-              .filter((item): item is CheckListItem => item !== null);
-
-          } catch (error) {
-            console.error("[ProcessInput] Error procesando checklist:", error);
-            return [];
-          }
-        })(),
-        type: isImage ? 'image' : 'text',
-        status: 'draft',
-        createdAt: Date.now()
-      };
-
-      setNodes(prev => [...prev, newNode]);
-
-      if (parentNode) {
-        setConnections(prev => {
-          // Prevenir conexiones duplicadas
-          const exists = prev.some(c => c.sourceId === parentNode.id && c.targetId === newNode.id);
-          if (exists) return prev;
-          return [...prev, {
-            id: `c-${Date.now()}`,
-            sourceId: parentNode.id,
-            targetId: newNode.id
-          }];
-        });
-      }
-
-      setSelectedNodeId(newNode.id);
-
-      if (!parentNode) {
-        const cx = window.innerWidth / 2;
-        const cy = window.innerHeight / 2;
-        setViewport({
-          x: cx - newNode.x * 1,
-          y: cy - newNode.y * 1,
-          scale: 1
-        });
-      }
-      wakeSimulation();
-
-    } catch (e: any) {
-      console.error("[ProcessInput] Error procesando idea:", e);
-
-      let errorMessage = "Error procesando la idea. ";
-
-      if (e && e.message) {
-        // Analizar el tipo de error
-        if (e.message.includes('API') || e.message.includes('servidor') || e.message.includes('fetch')) {
-          errorMessage += "No se pudo conectar con el servidor de IA. Verifica tu conexión a internet.";
-        } else if (e.message.includes('JSON') || e.message.includes('parsear') || e.message.includes('Invalid JSON')) {
-          errorMessage += "La respuesta de la IA no es válida. Esto puede deberse a un problema con el modelo de Gemini. Intenta de nuevo.";
-        } else if (e.message.includes('API Key') || e.message.includes('401') || e.message.includes('Invalid API Key')) {
-          errorMessage += "Error de autenticación. Verifica la configuración de la API Key en Vercel.";
-        } else if (e.message.includes('404') || e.message.includes('Model') || e.message.includes('not found')) {
-          errorMessage += "El modelo de IA no está disponible. Esto puede deberse a un problema con la versión de Gemini. Intenta de nuevo.";
-        } else if (e.message.includes('429') || e.message.includes('Rate limit')) {
-          errorMessage += "Límite de solicitudes excedido. Por favor, espera unos momentos e intenta de nuevo.";
-        } else if (e.message.includes('Respuesta inválida') || e.message.includes('No text field')) {
-          errorMessage += "La respuesta del servidor no tiene el formato esperado. Esto puede indicar un problema con el modelo de Gemini.";
-        } else {
-          errorMessage += e.message;
-        }
-      } else {
-        errorMessage += "Error desconocido. Intenta de nuevo.";
-      }
-
-      console.error("[ProcessInput] Mensaje de error para usuario:", errorMessage);
-      alert(errorMessage);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const MAX_RECOGNITION_RETRIES = 3;
-
-  const handleMicClick = async () => {
-    console.log("[Speech] handleMicClick llamado, isRecording:", isRecording);
-
-    // Verificar soporte del navegador
-    const hasSpeechRecognition = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
-    console.log("[Speech] Soporte de reconocimiento de voz:", hasSpeechRecognition);
-    console.log("[Speech] webkitSpeechRecognition:", 'webkitSpeechRecognition' in window);
-    console.log("[Speech] SpeechRecognition:", 'SpeechRecognition' in window);
-
-    if (!hasSpeechRecognition) {
-      const text = prompt("Tu navegador no soporta dictado nativo simple. Escribe tu idea:");
-      if (text && text.trim()) {
-        processInput(text.trim());
-      } else if (text !== null) {
-        alert("No ingresaste ninguna idea. Intenta de nuevo.");
-      }
-      return;
-    }
-
-    // Verificar que getUserMedia esté disponible
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      console.error("[Speech] getUserMedia no está disponible");
-      alert("Tu navegador no soporta acceso al micrófono. Por favor, usa Chrome, Edge o Safari.");
-      return;
-    }
-
-    if (isRecording) {
-      setIsRecording(false);
-      setRecognitionStatus("");
-      stopAudioAnalysis();
-      // Detener reconocimiento si está activo
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          console.log("[Speech] Error al detener:", e);
-        }
-        recognitionRef.current = null;
-      }
-      return;
-    }
-
-    // Verificar conexión a internet antes de iniciar
-    if (!navigator.onLine) {
-      const writeOffline = confirm("No hay conexión a internet.\n\n¿Quieres escribir tu idea manualmente?");
-      if (writeOffline) {
-        const text = prompt("Escribe tu idea:");
-        if (text && text.trim()) {
-          processInput(text.trim());
-        }
-      }
-      return;
-    }
-
-    // Verificar HTTPS (requerido para Speech Recognition)
-    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      alert("El reconocimiento de voz requiere HTTPS. Por favor, accede a la aplicación mediante HTTPS.");
-      return;
-    }
-
-    setIsRecording(true);
-    setRecognitionStatus("Solicitando permisos del micrófono...");
-
-    // Verificar permisos explícitamente antes de solicitar acceso al micrófono
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    const isChrome = /Chrome/.test(navigator.userAgent) && /Android/.test(navigator.userAgent);
-    const isSafari = /Safari/.test(navigator.userAgent) && /iPhone|iPad|iPod/.test(navigator.userAgent);
-    const isFirefox = /Firefox/.test(navigator.userAgent);
-
-    // Intentar verificar permisos si la API está disponible
-    if (navigator.permissions && navigator.permissions.query) {
-      try {
-        const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-        console.log("[Speech] Estado de permisos del micrófono:", permissionStatus.state);
-
-        if (permissionStatus.state === 'denied') {
-          setIsRecording(false);
-          setRecognitionStatus("");
-
-          let denyMessage = "🚫 PERMISOS BLOQUEADOS\n\n";
-          denyMessage += "El popup de permisos NO aparecerá porque ya negaste los permisos antes.\n\n";
-          denyMessage += "Para activar el micrófono manualmente:\n\n";
-
-          if (isChrome) {
-            denyMessage += "📱 CHROME (Android):\n";
-            denyMessage += "1. Toca el candado 🔒 junto a la URL\n";
-            denyMessage += "2. Toca 'Permisos'\n";
-            denyMessage += "3. Micrófono → 'Permitir'\n";
-            denyMessage += "4. Recarga la página\n";
-          } else if (isSafari) {
-            denyMessage += "🍎 SAFARI (iPhone/iPad):\n";
-            denyMessage += "1. Toca 'AA' en la barra de direcciones\n";
-            denyMessage += "2. Toca 'Configuración del sitio'\n";
-            denyMessage += "3. Micrófono → 'Permitir'\n";
-            denyMessage += "4. Recarga la página\n";
-          } else if (isFirefox) {
-            denyMessage += "🦊 FIREFOX:\n";
-            denyMessage += "1. Toca el candado 🔒\n";
-            denyMessage += "2. 'Editar permisos'\n";
-            denyMessage += "3. Marca 'Micrófono'\n";
-            denyMessage += "4. Recarga la página\n";
-          } else if (isMobile) {
-            denyMessage += "1. Toca el candado 🔒 o ícono ⓘ junto a la URL\n";
-            denyMessage += "2. Busca 'Permisos' o 'Configuración'\n";
-            denyMessage += "3. Encontrá 'Micrófono'\n";
-            denyMessage += "4. Cambialo a 'Permitir'\n";
-            denyMessage += "5. Recarga la página\n";
-          } else {
-            denyMessage += "1. Haz clic en el icono del candado 🔒 en la barra de direcciones\n";
-            denyMessage += "2. Permite el acceso al micrófono\n";
-            denyMessage += "3. Recarga la página\n";
-          }
-
-          const useManual = confirm(denyMessage + "\n¿Quieres escribir tu idea manualmente?");
-          if (useManual) {
-            const text = prompt("Escribe tu idea:");
-            if (text && text.trim()) {
-              processInput(text.trim());
-            }
-          }
-          return;
-        }
-      } catch (permError) {
-        console.log("[Speech] No se pudo verificar permisos:", permError);
-        // Continuar de todos modos, intentar solicitar permisos
-      }
-    }
-
-    setRecognitionStatus("Conectando al micrófono...");
-
-    // startAudioAnalysis ya solicita permisos, no necesitamos hacerlo dos veces
-    try {
-      await startAudioAnalysis();
-      console.log("[Speech] Análisis de audio iniciado correctamente");
-      setRecognitionStatus("Escuchando...");
-    } catch (audioError: any) {
-      console.error("[Speech] Error al iniciar análisis de audio:", audioError);
-      setIsRecording(false);
-      setRecognitionStatus("");
-
-      let errorMsg = "No se pudo acceder al micrófono.\n\n";
-
-      if (audioError.name === 'NotAllowedError' || audioError.name === 'PermissionDeniedError') {
-        if (isMobile) {
-          errorMsg = "❌ Acceso al micrófono denegado\n\n";
-          errorMsg += "Para habilitar el micrófono en tu móvil:\n\n";
-          errorMsg += "1. Toca el ícono de información (ⓘ) o candado (🔒) junto a la URL\n";
-          errorMsg += "2. Busca 'Permisos' o 'Configuración del sitio'\n";
-          errorMsg += "3. Encuentra la opción 'Micrófono'\n";
-          errorMsg += "4. Cambia a 'Permitir'\n";
-          errorMsg += "5. Recarga la página\n\n";
-          errorMsg += "O escribe tu idea manualmente.";
-        } else {
-          errorMsg += "Haz clic en el ícono del candado (🔒) en la barra de direcciones ";
-          errorMsg += "y permite el acceso al micrófono.";
-        }
-      } else if (audioError.name === 'NotFoundError') {
-        errorMsg += "No se encontró ningún micrófono.\n\n";
-        if (isMobile) {
-          errorMsg += "Verifica que:\n";
-          errorMsg += "• Tu dispositivo tenga micrófono\n";
-          errorMsg += "• Ninguna otra aplicación esté usando el micrófono\n";
-          errorMsg += "• El micrófono no esté bloqueado físicamente";
-        } else {
-          errorMsg += "Verifica que tu micrófono esté conectado y funcionando.";
-        }
-      } else if (audioError.name === 'NotReadableError') {
-        errorMsg += "El micrófono está siendo usado por otra aplicación.\n\n";
-        if (isMobile) {
-          errorMsg += "Cierra otras aplicaciones que puedan estar usando el micrófono ";
-          errorMsg += "(grabadora de voz, WhatsApp, etc.)";
-        } else {
-          errorMsg += "Cierra otras aplicaciones que puedan estar usando el micrófono.";
-        }
-      } else if (audioError.name === 'OverconstrainedError') {
-        errorMsg += "El micrófono no cumple con los requisitos necesarios.";
-      } else {
-        errorMsg += `Error: ${audioError.message || 'Error desconocido'}`;
-      }
-
-      const useManual = confirm(errorMsg + "\n\n¿Quieres escribir tu idea manualmente?");
-      if (useManual) {
-        const text = prompt("Escribe tu idea:");
-        if (text && text.trim()) {
-          processInput(text.trim());
-        }
-      }
-      return;
-    }
-
-    // @ts-ignore
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'es-ES';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.continuous = false;
-
-    // Guardar referencia en ref
-    recognitionRef.current = recognition;
-
-    let hasResult = false;
-    let currentRetry = 0;
-
-    recognition.onresult = (event: any) => {
-      console.log("[Speech] Resultado recibido:", event);
-
-      // Validar que existe el resultado
-      if (!event.results || event.results.length === 0 || !event.results[0] || event.results[0].length === 0) {
-        console.warn("[Speech] Resultado vacío o inválido");
-        setIsRecording(false);
-        setRecognitionStatus("");
-        stopAudioAnalysis();
-        recognitionRef.current = null;
-
-        const tryAgain = confirm("No se detectó ningún texto.\n\n¿Quieres escribir tu idea manualmente?");
-        if (tryAgain) {
-          const text = prompt("Escribe tu idea:");
-          if (text && text.trim()) {
-            processInput(text.trim());
-          }
-        }
-        return;
-      }
-
-      const text = event.results[0][0].transcript;
-      console.log("[Speech] Texto transcrito:", text);
-
-      if (!text || text.trim().length === 0) {
-        console.warn("[Speech] Texto vacío");
-        setIsRecording(false);
-        setRecognitionStatus("");
-        stopAudioAnalysis();
-        recognitionRef.current = null;
-
-        const tryAgain = confirm("No se detectó ningún texto.\n\n¿Quieres escribir tu idea manualmente?");
-        if (tryAgain) {
-          const text = prompt("Escribe tu idea:");
-          if (text && text.trim()) {
-            processInput(text.trim());
-          }
-        }
-        return;
-      }
-
-      hasResult = true;
-      setIsRecording(false);
-      setRecognitionStatus("");
-      setRecognitionRetryCount(0);
-      stopAudioAnalysis();
-      (window as any).activeRecognition = null;
-      processInput(text.trim());
-    };
-
-    const attemptRecognitionStart = async (retryCount: number = 0) => {
-      if (retryCount > 0) {
-        const delay = Math.pow(2, retryCount - 1) * 1000; // 1s, 2s, 4s
-        console.log(`[Speech] Reintentando en ${delay}ms... (Intento ${retryCount}/${MAX_RECOGNITION_RETRIES})`);
-        setRecognitionStatus(`Reintentando conexión... (${retryCount}/${MAX_RECOGNITION_RETRIES})`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-
-      try {
-        console.log("[Speech] Iniciando reconocimiento de voz...");
-        setRecognitionStatus(retryCount === 0 ? "Escuchando..." : `Reintentando... (${retryCount}/${MAX_RECOGNITION_RETRIES})`);
-        recognition.start();
-        currentRetry = retryCount;
-        setRecognitionRetryCount(retryCount);
-      } catch (startError: any) {
-        console.error("[Speech] Error al iniciar reconocimiento:", startError);
-
-        if (retryCount < MAX_RECOGNITION_RETRIES) {
-          attemptRecognitionStart(retryCount + 1);
-        } else {
-          setIsRecording(false);
-          setRecognitionStatus("");
-          setRecognitionRetryCount(0);
-          stopAudioAnalysis();
-          recognitionRef.current = null;
-
-          const writeManually = confirm(`No se pudo iniciar el reconocimiento de voz después de ${MAX_RECOGNITION_RETRIES} intentos.\n\n¿Quieres escribir tu idea manualmente?`);
-          if (writeManually) {
-            const text = prompt("Escribe tu idea:");
-            if (text && text.trim()) {
-              processInput(text.trim());
-            }
-          }
-        }
-      }
-    };
-
-    recognition.onerror = async (event: any) => {
-      console.error("[Speech] Error:", event.error, event);
-
-      // No procesar si ya tenemos un resultado
-      if (hasResult) return;
-
-      let errorMessage = "Error en el reconocimiento de voz. ";
-      let shouldRetry = false;
-
-      switch (event.error) {
-        case 'no-speech':
-          errorMessage = "No se detectó ningún audio. Por favor, habla más cerca del micrófono.";
-          setIsRecording(false);
-          setRecognitionStatus("");
-          stopAudioAnalysis();
-          recognitionRef.current = null;
-
-          const tryAgain = confirm(errorMessage + "\n\n¿Quieres intentar de nuevo o escribir manualmente?");
-          if (tryAgain) {
-            // Reiniciar el proceso
-            setTimeout(() => handleMicClick(), 100);
-          } else {
-            const text = prompt("Escribe tu idea:");
-            if (text && text.trim()) {
-              processInput(text.trim());
-            }
-          }
-          return;
-
-        case 'audio-capture':
-          // Este error SÍ indica problema con el micrófono
-          console.error("[Speech] Error de captura de audio - Problema con el micrófono");
-          errorMessage = "No se pudo capturar audio del micrófono.\n\n";
-          errorMessage += "Esto indica un problema con el micrófono:\n";
-          errorMessage += "• Verifica que el micrófono esté conectado\n";
-          errorMessage += "• Verifica que el micrófono no esté bloqueado físicamente\n";
-          errorMessage += "• Verifica que el micrófono funcione en otras aplicaciones\n";
-          errorMessage += "• Intenta desconectar y volver a conectar el micrófono";
-          break;
-
-        case 'not-allowed':
-          errorMessage = "Permisos de micrófono denegados. Por favor, permite el acceso al micrófono.";
-          break;
-
-        case 'network':
-          // El error "network" NO significa que no tengas micrófono
-          // Significa que no puede conectarse al servicio de reconocimiento de voz de Google
-          console.error("[Speech] Error de red - No puede conectarse al servicio de reconocimiento de voz");
-          console.error("[Speech] Verificando estado de conexión...");
-          console.error("[Speech] navigator.onLine:", navigator.onLine);
-          console.error("[Speech] location.protocol:", location.protocol);
-          console.error("[Speech] location.hostname:", location.hostname);
-          console.error("[Speech] Retry count:", currentRetry);
-
-          // Retry automático para errores de red
-          if (currentRetry < MAX_RECOGNITION_RETRIES) {
-            shouldRetry = true;
-            console.log(`[Speech] Reintentando automáticamente... (${currentRetry + 1}/${MAX_RECOGNITION_RETRIES})`);
-            await attemptRecognitionStart(currentRetry + 1);
-            return;
-          }
-
-          // Si ya agotamos los reintentos, ofrecer escribir manualmente
-          errorMessage = "Error de conexión con el servicio de reconocimiento de voz.\n\n";
-          errorMessage += "Este error NO significa que no tengas micrófono.\n";
-          errorMessage += "Significa que el navegador no puede conectarse al servicio de Google.\n\n";
-          errorMessage += "Posibles causas:\n";
-          errorMessage += "• Sin conexión a internet\n";
-          errorMessage += "• Firewall o antivirus bloqueando la conexión\n";
-          errorMessage += "• No estás en HTTPS (requerido para reconocimiento de voz)\n";
-          errorMessage += "• El servicio de Google está temporalmente no disponible\n";
-          errorMessage += "• Proxy o VPN bloqueando la conexión\n\n";
-          errorMessage += `Se intentó ${MAX_RECOGNITION_RETRIES} veces sin éxito.`;
-
-          setIsRecording(false);
-          setRecognitionStatus("");
-          setRecognitionRetryCount(0);
-          stopAudioAnalysis();
-          recognitionRef.current = null;
-
-          // Ofrecer escribir manualmente como alternativa
-          const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
-          if (writeManually) {
-            const text = prompt("Escribe tu idea:");
-            if (text && text.trim()) {
-              processInput(text.trim());
-            } else if (text !== null) {
-              alert("No ingresaste ninguna idea. Intenta escribir un texto y vuelve a intentarlo.");
-            }
-          }
-          return; // No mostrar alert adicional
-
-        case 'aborted':
-          // Ignorar errores de aborto (usuario canceló)
-          console.log("[Speech] Reconocimiento abortado");
-          setIsRecording(false);
-          setRecognitionStatus("");
-          setRecognitionRetryCount(0);
-          stopAudioAnalysis();
-          recognitionRef.current = null;
-          return;
-
-        case 'service-not-allowed':
-          errorMessage = "El servicio de reconocimiento de voz no está disponible.";
-          break;
-
-        default:
-          errorMessage += `Error: ${event.error || 'Error desconocido'}`;
-      }
-
-      if (!shouldRetry) {
-        setIsRecording(false);
-        setRecognitionStatus("");
-        setRecognitionRetryCount(0);
-        stopAudioAnalysis();
-        recognitionRef.current = null;
-        alert(errorMessage);
-      }
-    };
-
-    recognition.onend = () => {
-      console.log("[Speech] Reconocimiento finalizado. HasResult:", hasResult);
-
-      // Solo limpiar si no hay resultado y no fue por un error conocido
-      if (!hasResult) {
-        const lastError = (window as any).lastSpeechError;
-        if (!lastError || lastError !== 'no-speech') {
-          // No mostrar alerta aquí, onerror ya lo maneja
-          console.log("[Speech] Reconocimiento terminó sin resultado");
-        }
-      }
-
-      // No limpiar estados aquí si vamos a reintentar
-      // Los estados se limpian en los handlers de error/resultado
-    };
-
-    recognition.onnomatch = () => {
-      console.warn("[Speech] No se encontró coincidencia");
-      hasResult = false;
-      setIsRecording(false);
-      setRecognitionStatus("");
-      setRecognitionRetryCount(0);
-      stopAudioAnalysis();
-      recognitionRef.current = null;
-
-      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      let errorMessage = "🎤 No se pudo reconocer el audio.\n\n";
-
-      if (isMobile) {
-        errorMessage += "¿El micrófono tiene permisos?\n\n";
-        errorMessage += "Si es la primera vez que usas el micrófono:\n";
-        errorMessage += "• Verifica que hayas dado permisos cuando se solicitaron\n";
-        errorMessage += "• Mira si hay un mensaje en la parte superior del navegador\n\n";
-        errorMessage += "Otras sugerencias:\n";
-        errorMessage += "• Habla más cerca del micrófono\n";
-        errorMessage += "• Reduce el ruido de fondo\n";
-        errorMessage += "• Habla más claro y pausado\n";
-        errorMessage += "• Verifica que ninguna app esté usando el micrófono";
-      } else {
-        errorMessage += "Por favor, intenta hablar más claro o más cerca del micrófono.";
-      }
-
-      const writeManually = confirm(errorMessage + "\n\n¿Quieres escribir tu idea manualmente?");
-      if (writeManually) {
-        const text = prompt("Escribe tu idea:");
-        if (text && text.trim()) {
-          processInput(text.trim());
-        }
-      }
-    };
-
-    // Iniciar el proceso con retry automático
-    attemptRecognitionStart(0);
-  };
-
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64 = reader.result as string;
-        const compressed = await compressImage(base64);
-        processInput({ image: compressed, prompt: "Crea una idea basada en esta imagen" }, true);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  // -- GESTURE HELPERS --
-
-  const getPointersDistance = () => {
-    const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
-    if (points.length < 2) return 0;
-    return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-  };
-
-  const getPointersCenter = () => {
-    const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
-    let x = 0, y = 0;
-    points.forEach(p => { x += p.x; y += p.y; });
-    return { x: x / points.length, y: y / points.length };
-  };
-
-  // -- POINTER EVENTS (CANVAS) --
-
-  const handlePointerDown = (e: React.PointerEvent) => {
-    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    canvasRef.current?.setPointerCapture(e.pointerId);
-    if (activePointers.current.size === 2) {
-      initialPinchDistance.current = getPointersDistance();
-      initialViewportScale.current = viewport.scale;
-    }
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!activePointers.current.has(e.pointerId)) return;
-
-    const prevPos = activePointers.current.get(e.pointerId)!;
-    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (draggingNodeId.current) {
-      const dx = e.clientX - prevPos.x;
-      const dy = e.clientY - prevPos.y;
-
-      if (!isDraggingNodeRef.current && dragStartPos.current) {
-        const dist = Math.hypot(e.clientX - dragStartPos.current.x, e.clientY - dragStartPos.current.y);
-        if (dist > 5) {
-          isDraggingNodeRef.current = true;
-          saveSnapshot(); // Save state before dragging actually changes things significantly
-        }
-      }
-
-      if (isDraggingNodeRef.current) {
-        setNodes(prev => prev.map(n => {
-          if (n.id === draggingNodeId.current) {
-            return { ...n, x: n.x + dx / viewport.scale, y: n.y + dy / viewport.scale };
-          }
-          return n;
-        }));
-      }
-      return;
-    }
-
-    if (tempConnection) {
-      const logicalX = (e.clientX - viewport.x) / viewport.scale;
-      const logicalY = (e.clientY - viewport.y) / viewport.scale;
-      setTempConnection(prev => prev ? { ...prev, endX: logicalX, endY: logicalY } : null);
-      return;
-    }
-
-    if (activePointers.current.size === 2 && initialPinchDistance.current) {
-      const currentDist = getPointersDistance();
-      const center = getPointersCenter();
-      const scaleFactor = currentDist / initialPinchDistance.current;
-      let newScale = initialViewportScale.current * scaleFactor;
-      newScale = Math.min(Math.max(0.1, newScale), 5);
-      const newX = center.x - (center.x - viewport.x) * (newScale / viewport.scale);
-      const newY = center.y - (center.y - viewport.y) * (newScale / viewport.scale);
-      setViewport({ x: newX, y: newY, scale: newScale });
-      return;
-    }
-
-    if (activePointers.current.size === 1) {
-      const dx = e.clientX - prevPos.x;
-      const dy = e.clientY - prevPos.y;
-      setViewport(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
-    }
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (tempConnection) {
-      const targetElement = document.elementFromPoint(e.clientX, e.clientY);
-      const targetNodeElement = targetElement?.closest('[data-node-id]');
-
-      if (targetNodeElement) {
-        const targetId = targetNodeElement.getAttribute('data-node-id');
-        if (targetId && targetId !== tempConnection.sourceId) {
-          // Prevenir conexiones duplicadas y ciclos
-          const existingConnection = connections.find(
-            c => c.sourceId === tempConnection.sourceId && c.targetId === targetId
-          );
-          if (!existingConnection) {
-            // Prevenir ciclos: verificar que el target no sea ancestro del source
-            const wouldCreateCycle = (sourceId: string, targetId: string): boolean => {
-              const visited = new Set<string>();
-              const checkCycle = (currentId: string): boolean => {
-                if (currentId === sourceId) return true;
-                if (visited.has(currentId)) return false;
-                visited.add(currentId);
-                const children = connections
-                  .filter(c => c.sourceId === currentId)
-                  .map(c => c.targetId);
-                return children.some(childId => checkCycle(childId));
-              };
-              return checkCycle(targetId);
-            };
-
-            if (!wouldCreateCycle(tempConnection.sourceId, targetId)) {
-              saveSnapshot();
-              setConnections(prev => {
-                const newConns = [...prev, {
-                  id: `c-${Date.now()}`,
-                  sourceId: tempConnection.sourceId,
-                  targetId: targetId
-                }];
-                setTimeout(wakeSimulation, 0);
-                return newConns;
-              });
-            }
-          }
-        }
-      }
-      setTempConnection(null);
-    }
-
-    if (draggingNodeId.current) {
-      if (!isDraggingNodeRef.current) {
-        const nodeId = draggingNodeId.current;
-        const now = Date.now();
-        const lastTap = lastNodeTapTime.current;
-        if (lastTap && lastTap.id === nodeId && (now - lastTap.time) < 300) {
-          setInspectorNodeId(nodeId);
-          lastNodeTapTime.current = null;
-        } else {
-          setSelectedNodeId(nodeId);
-          lastNodeTapTime.current = { id: nodeId, time: now };
-        }
-      } else {
-        wakeSimulation();
-      }
-      draggingNodeId.current = null;
-      isDraggingNodeRef.current = false;
-      dragStartPos.current = null;
-    } else {
-      const target = e.target as HTMLElement;
-      if (!target.closest('.node-interactive') && !tempConnection) {
-        setInspectorNodeId(null);
-      }
-    }
-
-    activePointers.current.delete(e.pointerId);
-    if (activePointers.current.size < 2) {
-      initialPinchDistance.current = null;
-    }
-    canvasRef.current?.releasePointerCapture(e.pointerId);
-  };
-
-  // -- NODE EVENTS --
-
-  const handleNodePointerDown = (e: React.PointerEvent, nodeId: string) => {
-    e.preventDefault();
-    draggingNodeId.current = nodeId;
-    isDraggingNodeRef.current = false;
-    dragStartPos.current = { x: e.clientX, y: e.clientY };
-  };
-
-  const startConnection = (e: React.PointerEvent, nodeId: string) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const node = nodes.find(n => n.id === nodeId);
-    if (!node) return;
-    setTempConnection({ sourceId: nodeId, endX: node.x, endY: node.y });
-  };
-
-  // -- RENDER LOGIC (FILTERING) --
-
-  const rootNodes = useMemo(() => {
-    const targetIds = new Set(connections.map(c => c.targetId));
-    return nodes.filter(n => !targetIds.has(n.id));
-  }, [nodes, connections]);
-
-  const visibleNodes = useMemo(() => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return nodes.filter(n =>
-        n.title.toLowerCase().includes(q) ||
-        n.category.toLowerCase().includes(q) ||
-        n.summary.toLowerCase().includes(q)
-      ).map(n => ({ ...n, isDimmed: false }));
-    }
-    if (!selectedNodeId) {
-      return rootNodes.map(n => ({ ...n, isDimmed: false }));
-    }
-    const rootId = getRootAncestor(selectedNodeId, connections);
-    const descendantIds = getDescendants(rootId, connections);
-    const validIds = new Set([rootId, ...descendantIds]);
-    return nodes.filter(n => validIds.has(n.id)).map(n => ({ ...n, isDimmed: false }));
-
-  }, [nodes, connections, selectedNodeId, searchQuery, rootNodes]);
-
-  const visibleConnections = useMemo(() => {
-    const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
-    return connections.filter(c => visibleNodeIds.has(c.sourceId) && visibleNodeIds.has(c.targetId));
-  }, [connections, visibleNodes]);
-
-
-  const getNodeStyle = (node: IdeaNode) => {
-    const isGlobalRoot = !connections.some(c => c.targetId === node.id);
-    if (isGlobalRoot) {
-      return "bg-cyan-500 text-white text-lg font-bold py-4 px-6 rounded-full shadow-cyan-500/30 border-4 border-cyan-200";
-    }
-    return "bg-amber-100 text-slate-800 text-xs font-medium py-2 px-4 rounded-full border-2 border-amber-300 shadow-sm";
-  };
-
-  const drawCurve = (x1: number, y1: number, x2: number, y2: number) => {
-    return `M ${x1} ${y1} C ${x1 + (x2 - x1) / 2} ${y1}, ${x2 - (x2 - x1) / 2} ${y2}, ${x2} ${y2}`;
-  };
-
-  // -- CHAT HANDLER --
-
-  const handleSendChatMessage = async (userText: string) => {
-    setChatMessages(prev => [...prev, { role: 'user', text: userText }]);
-    setIsChatLoading(true);
-
-    try {
-      // Prepare Context (simplified structure to save tokens)
-      const contextData = visibleNodes.map(n => ({
-        title: n.title,
-        summary: n.summary,
-        category: n.category,
-        cost: n.cost,
-        checklist: n.checklist,
-        status: n.status,
-        isRoot: !connections.some(c => c.targetId === n.id)
-      }));
-
-      const prompt = `
-          Eres un asistente experto analizando el siguiente mapa mental (JSON):
-          ${JSON.stringify(contextData)}
-
-          Usuario: "${userText}"
-
-          Responde de forma útil, concisa y directa basándote SOLAMENTE en los datos proporcionados.
-          `;
-
-      const responseText = await callAI({
-        prompt: prompt
-      });
-
-      setChatMessages(prev => [...prev, { role: 'model', text: responseText }]);
-    } catch (e) {
-      setChatMessages(prev => [...prev, { role: 'model', text: 'Lo siento, hubo un error al conectar con la IA.' }]);
-    } finally {
-      setIsChatLoading(false);
-    }
-  };
-
-  return (
-    <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none">
-
-      {/* SIDEBAR MENU */}
-      <div
-        className={`fixed inset-y-0 left-0 w-72 bg-white shadow-2xl transform transition-transform duration-300 z-[100] flex flex-col ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}
-      >
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-          <h2 className="font-bold text-lg text-slate-800">Mis Proyectos</h2>
-          <button onClick={() => setIsMenuOpen(false)} className="p-2 hover:bg-slate-100 rounded-full">
-            <X className="w-5 h-5 text-slate-500" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2">
-          <button
-            onClick={createManualProject}
-            className="w-full p-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 text-slate-500 hover:bg-slate-50 flex items-center justify-center gap-2 font-semibold text-sm transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Nuevo Proyecto
-          </button>
-          {rootNodes.length === 0 && <div className="p-4 text-sm text-slate-400 text-center">No hay proyectos raíz.</div>}
-          {rootNodes.map(node => (
-            <button
-              key={node.id}
-              onClick={() => { focusOnNode(node.id); setIsMenuOpen(false); }}
-              className={`w-full text-left p-3 rounded-lg mb-1 flex items-center gap-3 transition-colors ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'bg-cyan-50 border border-cyan-200' : 'hover:bg-slate-50 border border-transparent'}`}
-            >
-              <Disc className={`w-4 h-4 ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-600' : 'text-slate-400'}`} />
-              <div className="flex flex-col overflow-hidden">
-                <span className={`font-semibold text-sm truncate ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-800' : 'text-slate-700'}`}>{node.title}</span>
-                <span className="text-[10px] text-slate-400 uppercase truncate">{node.category}</span>
-              </div>
-            </button>
-          ))}
-        </div>
-
-        {/* EXPORT SECTION */}
-        <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-2">
-          <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Exportar Vista</h3>
-          <button onClick={() => { exportAsImage(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
-            <Download className="w-4 h-4 text-cyan-600" />
-            Imagen (PNG)
-          </button>
-          <button onClick={() => { exportAsMarkdown(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
-            <FileText className="w-4 h-4 text-violet-500" />
-            Markdown (Texto)
-          </button>
-        </div>
-      </div>
-
-      {/* HEADER UI */}
-      <div className="absolute top-4 left-4 right-4 z-50 pointer-events-none flex items-start justify-between gap-4">
-        <div className="flex gap-2 pointer-events-auto">
-          <button onClick={() => setIsMenuOpen(true)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50">
-            <Menu className="w-5 h-5 text-slate-700" />
-          </button>
-          {selectedNodeId && (
-            <button onClick={() => setSelectedNodeId(null)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50 flex items-center gap-2 px-4">
-              <ArrowLeft className="w-5 h-5 text-slate-700" />
-              <span className="text-xs font-bold text-slate-600 hidden sm:inline">Todos</span>
-            </button>
-          )}
-          <div className="flex bg-white rounded-full shadow-md border border-slate-200 ml-2">
-            <button onClick={undo} disabled={pastHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-l-full disabled:opacity-30">
-              <Undo className="w-5 h-5 text-slate-600" />
-            </button>
-            <div className="w-px bg-slate-200 my-2"></div>
-            <button onClick={redo} disabled={futureHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-r-full disabled:opacity-30">
-              <Redo className="w-5 h-5 text-slate-600" />
-            </button>
-          </div>
-        </div>
-
-        <div className="pointer-events-auto flex-1 max-w-md">
-          <div className="bg-white/90 backdrop-blur-md border border-slate-200 rounded-full p-3 shadow-lg flex items-center gap-2 w-full">
-            <Search className="w-5 h-5 text-slate-400" />
-            <input
-              className="bg-transparent border-none outline-none text-slate-700 w-full placeholder-slate-400 text-sm"
-              placeholder="Buscar..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* CANVAS LAYER */}
-      <div
-        ref={canvasRef}
-        className="absolute inset-0 touch-none bg-slate-50"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-      >
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
-        <div style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`, transformOrigin: '0 0', width: '100%', height: '100%', willChange: 'transform' }} className="relative w-full h-full">
-
-          <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none">
-            {visibleConnections.map(conn => {
-              const source = nodes.find(n => n.id === conn.sourceId);
-              const target = nodes.find(n => n.id === conn.targetId);
-              if (!source || !target) return null;
-              const isRootSource = !connections.some(c => c.targetId === source.id);
-              return <path key={conn.id} d={drawCurve(source.x, source.y, target.x, target.y)} stroke={isRootSource ? "#22d3ee" : "#a3e635"} strokeWidth={isRootSource ? "3" : "1.5"} fill="none" strokeLinecap="round" />;
-            })}
-            {tempConnection && <path d={drawCurve(nodes.find(n => n.id === tempConnection.sourceId)!.x, nodes.find(n => n.id === tempConnection.sourceId)!.y, tempConnection.endX, tempConnection.endY)} stroke="#94a3b8" strokeWidth="2" strokeDasharray="5,5" fill="none" />}
-          </svg>
-
-          {visibleNodes.map((node: any) => (
-            <div
-              key={node.id}
-              data-node-id={node.id}
-              className={`node-interactive absolute group flex justify-center items-center touch-none ${node.isDimmed ? 'opacity-20 blur-sm grayscale' : 'opacity-100'} ${selectedNodeId === node.id ? 'z-50' : 'z-10'} transition-transform duration-75`}
-              style={{ transform: `translate(${node.x}px, ${node.y}px) translate(-50%, -50%)` }}
-              onPointerDown={(e) => handleNodePointerDown(e, node.id)}
-            >
-              <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)}>
-                <Plus className="w-4 h-4 text-white" />
-              </div>
-              <div className={`${getNodeStyle(node)} shadow-md flex items-center gap-2 min-w-max max-w-[200px] relative overflow-hidden`}>
-                {node.images && node.images.length > 0 && (
-                  <img src={node.images[0]} alt="" className="w-8 h-8 rounded-full object-cover border border-white/50" />
-                )}
-                <div className="flex flex-col">
-                  <span className="truncate max-w-[180px]">{node.title}</span>
-                  {node.checklist && node.checklist.length > 0 && (
-                    <div className="flex items-center gap-1 text-[10px] opacity-70">
-                      <CheckSquare className="w-3 h-3" />
-                      <span>{node.checklist.filter((i: any) => i.done).length}/{node.checklist.length}</span>
-                    </div>
-                  )}
-                </div>
-                {node.status === 'scheduled' && <div className="w-2 h-2 rounded-full bg-blue-600" />}
-                {selectedNodeId === node.id && <div className="absolute inset-0 -m-1 rounded-full border-2 border-blue-400 animate-pulse pointer-events-none" />}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* INPUT BAR (MIC & CAMERA) */}
-      <div
-        className={`fixed left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
-          }`}
-        style={{
-          bottom: inspectorNodeId
-            ? 'calc(85vh + 1rem)'
-            : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
-          transform: 'translateZ(0)',
-        }}
-      >
-
-        {/* Camera Button */}
-        <div className="pointer-events-auto relative">
-          <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="absolute inset-0 opacity-0 z-10 cursor-pointer" />
-          <button className="w-12 h-12 bg-white rounded-full shadow-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 active:scale-95 transition-transform text-slate-600">
-            <Camera className="w-6 h-6" />
-          </button>
-        </div>
-
-        {/* Mic Button */}
-        <div className="flex flex-col items-center gap-2">
-          <div className="bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] truncate">
-            {selectedNodeId
-              ? `Añadiendo a: ${nodes.find(n => n.id === selectedNodeId)?.title}`
-              : 'Creando Nuevo Proyecto'}
-          </div>
-          <button
-            onClick={handleMicClick}
-            disabled={isProcessing}
-            className={`
-                relative pointer-events-auto flex items-center justify-center w-16 h-16 rounded-full shadow-2xl
-                transition-all duration-300 transform hover:scale-105 active:scale-95 overflow-hidden
-                ${isRecording ? 'bg-red-500 ring-4 ring-red-200' : 'bg-cyan-600'}
-                ${isProcessing ? 'opacity-70' : ''}
-                border-2 border-white
-            `}
-          >
-            {isProcessing ? (
-              <BrainCircuit className="w-8 h-8 animate-spin text-white" />
-            ) : isRecording ? (
-              <div className="flex items-center justify-center gap-[2px] h-8">
-                {[...Array(5)].map((_, i) => {
-                  const val = audioData[i * 4] || 0;
-                  const height = Math.max(20, (val / 255) * 100);
-                  return <div key={i} className="w-1 bg-white rounded-full transition-all duration-75" style={{ height: `${height}%` }} />
-                })}
-              </div>
-            ) : (
-              <Mic className="w-8 h-8 text-white" />
-            )}
-          </button>
-          {/* Recognition Status Indicator */}
-          {recognitionStatus && (
-            <div className="bg-orange-500/90 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] text-center">
-              {recognitionStatus}
-            </div>
-          )}
-        </div>
-
-
-        {/* Chat Button Placeholder to balance layout */}
-        <div className="w-12 h-12 pointer-events-none opacity-0" />
-      </div>
-
-      {/* FLOATING CHAT BUTTON */}
-      <button
-        onClick={() => setIsChatOpen(true)}
-        className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
-          }`}
-        style={{
-          bottom: inspectorNodeId
-            ? 'calc(85vh + 1rem)'
-            : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
-          transform: 'translateZ(0)',
-        }}
-      >
-        <MessageCircle className="w-7 h-7" />
-      </button>
-
-      {/* CHAT OVERLAY */}
-      {isChatOpen && (
-        <div className="fixed inset-0 z-[60] bg-black/20 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4">
-          <div className="bg-white w-full sm:max-w-md h-[80vh] sm:h-[600px] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
-            {/* Header */}
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-cyan-100 rounded-full flex items-center justify-center">
-                  <Sparkles className="w-4 h-4 text-cyan-600" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-800">Asistente IA</h3>
-                  <p className="text-[10px] text-slate-500">Pregunta sobre tu proyecto actual</p>
-                </div>
-              </div>
-              <button onClick={() => setIsChatOpen(false)} className="p-2 hover:bg-slate-200 rounded-full">
-                <X className="w-5 h-5 text-slate-500" />
-              </button>
-            </div>
-
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
-              {chatMessages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${msg.role === 'user' ? 'bg-cyan-600 text-white rounded-tr-sm' : 'bg-white border border-slate-100 shadow-sm text-slate-700 rounded-tl-sm'}`}>
-                    {msg.text}
-                  </div>
-                </div>
-              ))}
-              {isChatLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-white border border-slate-100 p-3 rounded-2xl rounded-tl-sm shadow-sm flex gap-1">
-                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" />
-                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-100" />
-                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-200" />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Input */}
-            <div className="p-4 bg-white border-t border-slate-100">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const input = (e.target as HTMLFormElement).elements.namedItem('msg') as HTMLInputElement;
-                  if (input.value.trim()) {
-                    handleSendChatMessage(input.value);
-                    input.value = '';
-                  }
-                }}
-                className="flex gap-2"
-              >
-                <input
-                  name="msg"
-                  className="flex-1 bg-slate-100 rounded-full px-4 text-sm outline-none focus:ring-2 ring-cyan-200"
-                  placeholder="Escribe tu pregunta..."
-                  autoComplete="off"
-                />
-                <button type="submit" disabled={isChatLoading} className="p-2 bg-cyan-600 text-white rounded-full disabled:opacity-50">
-                  <Send className="w-5 h-5" />
-                </button>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* UI: INSPECTOR */}
-      {inspectorNodeId && (
-        <Inspector
-          node={nodes.find(n => n.id === inspectorNodeId)!}
-          onClose={() => setInspectorNodeId(null)}
-          onUpdate={(updatedNode) => {
-            saveSnapshot();
-            setNodes(prev => prev.map(n => n.id === updatedNode.id ? updatedNode : n));
-          }}
-          onDelete={() => {
-            saveSnapshot();
-            setNodes(prev => prev.filter(n => n.id !== inspectorNodeId));
-            setConnections(prev => prev.filter(c => c.sourceId !== inspectorNodeId && c.targetId !== inspectorNodeId));
-            setInspectorNodeId(null);
-            setSelectedNodeId(null);
-          }}
-          onGenerateBrainstorm={async (node) => {
-            setIsProcessing(true);
-            try {
-              const prompt = `Genera 3 ideas breves y creativas relacionadas con: "${node.title}".`;
-
-              const systemInstruction = `Eres un generador de ideas creativas.
-Debes devolver EXACTAMENTE un array JSON de 3 strings.
-Cada string debe ser una idea breve (máximo 5 palabras).
-
-Formato REQUERIDO (sin texto adicional):
-["idea 1", "idea 2", "idea 3"]
-
-Ejemplo correcto:
-["Automatizar con scripts", "Integrar con Zapier", "Crear dashboard visual"]
-
-NO devuelvas objetos, solo strings.
-NO añadas texto explicativo antes o después del JSON.`;
-
-              const responseText = await callAI({
-                prompt: prompt,
-                systemInstruction: systemInstruction,
-                isJson: true
-              });
-
-              let ideas;
-              try {
-                let parsed = JSON.parse(responseText);
-
-                // Debug logging
-                console.log("[Brainstorm] Respuesta parseada:", parsed);
-                console.log("[Brainstorm] Tipo:", typeof parsed);
-                console.log("[Brainstorm] Es array:", Array.isArray(parsed));
-
-                // Validar estructura
-                // Caso 1: Si es un objeto con propiedad 'ideas' o similar
-                if (typeof parsed === 'object' && !Array.isArray(parsed)) {
-                  const possibleArrays = ['ideas', 'items', 'suggestions', 'list', 'data'];
-                  let found = false;
-
-                  for (const key of possibleArrays) {
-                    if (Array.isArray(parsed[key])) {
-                      console.warn(`[Brainstorm] Extrayendo array de propiedad '${key}'`);
-                      parsed = parsed[key];
-                      found = true;
-                      break;
-                    }
-                  }
-
-                  if (!found) {
-                    throw new Error(`Respuesta es un objeto, no un array. Keys: ${Object.keys(parsed).join(', ')}`);
-                  }
-                }
-
-                // Caso 2: Si no es array, error
-                if (!Array.isArray(parsed)) {
-                  throw new Error(`Respuesta no es un array. Tipo: ${typeof parsed}`);
-                }
-
-                // Caso 3: Si está vacío
-                if (parsed.length === 0) {
-                  throw new Error("El array de ideas está vacío");
-                }
-
-                // Normalizar: Convertir todo a strings
-                ideas = parsed.map((item, i) => {
-                  // Si es string, OK
-                  if (typeof item === 'string') {
-                    return item.trim();
-                  }
-
-                  // Si es objeto, intentar extraer texto
-                  if (typeof item === 'object' && item !== null) {
-                    const text = item.title || item.idea || item.text || item.name || item.description;
-                    if (text && typeof text === 'string') {
-                      console.warn(`[Brainstorm] Item ${i} es objeto, extrayendo texto de propiedad`);
-                      return text.trim();
-                    }
-
-                    console.warn(`[Brainstorm] Item ${i} es objeto sin propiedad de texto, usando JSON.stringify`);
-                    return JSON.stringify(item);
-                  }
-
-                  // Convertir cualquier otra cosa a string
-                  return String(item);
-                }).filter(text => text.length > 0);
-
-                // Validar que tengamos al menos 1 idea
-                if (ideas.length === 0) {
-                  throw new Error("No se pudieron extraer ideas válidas del array");
-                }
-
-                console.log(`[Brainstorm] ${ideas.length} ideas válidas extraídas:`, ideas);
-
-              } catch (parseError: any) {
-                console.error("[Brainstorm] Error completo:", parseError);
-                console.error("[Brainstorm] Respuesta recibida:", responseText);
-
-                // Intentar extraer JSON de markdown
-                const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/);
-                if (jsonMatch) {
-                  console.warn("[Brainstorm] Detectado JSON en markdown, reintentando...");
-                  try {
-                    const extracted = JSON.parse(jsonMatch[1]);
-                    if (Array.isArray(extracted)) {
-                      ideas = extracted.map(String);
-                      console.log("[Brainstorm] ✅ Extraído de markdown exitosamente");
-                    }
-                  } catch {
-                    throw new Error(`Error parseando JSON dentro de markdown: ${parseError.message}`);
-                  }
-                } else {
-                  throw new Error(`Error parseando respuesta como JSON: ${parseError.message}. Respuesta: ${responseText.substring(0, 100)}...`);
-                }
-              }
-
-              saveSnapshot();
-              const newNodes: IdeaNode[] = [];
-              const newConns: Connection[] = [];
-
-              ideas.forEach((ideaText: string, i: number) => {
-                const angle = (Math.PI * 2 / 3) * i;
-                const dist = 180;
-                const newNode: IdeaNode = {
-                  id: Date.now() + i + '',
-                  x: node.x + Math.cos(angle) * dist,
-                  y: node.y + Math.sin(angle) * dist,
-                  title: ideaText,
-                  summary: "Generado por IA",
-                  originalContext: "",
-                  category: node.category,
-                  cost: 0,
-                  links: [],
-                  checklist: [],
-                  images: [],
-                  attachments: [],
-                  type: 'text',
-                  status: 'draft',
-                  createdAt: Date.now()
-                };
-                newNodes.push(newNode);
-                newConns.push({ id: `c-${Date.now()}-${i}`, sourceId: node.id, targetId: newNode.id });
-              });
-
-              setNodes(prev => [...prev, ...newNodes]);
-              setConnections(prev => {
-                // Filtrar conexiones duplicadas
-                const existingIds = new Set(prev.map(c => `${c.sourceId}-${c.targetId}`));
-                const uniqueConns = newConns.filter(c => !existingIds.has(`${c.sourceId}-${c.targetId}`));
-                return [...prev, ...uniqueConns];
-              });
-              wakeSimulation();
-            } catch (e: any) {
-              console.error("[Brainstorm] Error completo:", e);
-
-              // Construir mensaje de error útil
-              let errorMessage = "Error generando ideas";
-
-              if (e.message) {
-                if (e.message.includes('parsear') || e.message.includes('JSON')) {
-                  errorMessage = "La IA devolvió un formato inválido. Intenta de nuevo.";
-                } else if (e.message.includes('array')) {
-                  errorMessage = "La IA no devolvió una lista de ideas. Intenta de nuevo.";
-                } else if (e.message.includes('API') || e.message.includes('fetch')) {
-                  errorMessage = "Error de conexión con el servidor. Verifica tu internet.";
-                } else {
-                  errorMessage = `Error: ${e.message}`;
-                }
-              }
-
-              console.error("[Brainstorm] Mensaje para usuario:", errorMessage);
-              alert(errorMessage);
-            } finally {
-              setIsProcessing(false);
-            }
-          }}
-        />
-      )}
-
-      {/* MINIMAP - Hidden on mobile by default, visible on larger screens */}
-      <div className="absolute bottom-8 left-8 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-lg p-2 w-48 h-32 overflow-hidden pointer-events-none hidden md:block opacity-80 hover:opacity-100 transition-opacity">
-        <div className="relative w-full h-full bg-slate-50/50 rounded-lg">
-          {nodes.map(n => {
-            // Simple projection: Map -2500..2500 to 0..100%
-            const x = Math.max(0, Math.min(100, ((n.x + 2500) / 5000) * 100));
-            const y = Math.max(0, Math.min(100, ((n.y + 2500) / 5000) * 100));
-            return (
-              <div key={n.id}
-                className={`absolute rounded-full ${selectedNodeId === n.id ? 'bg-cyan-500 w-1.5 h-1.5 z-10' : 'bg-slate-300 w-1 h-1'}`}
-                style={{ left: `${x}%`, top: `${y}%` }}
-              />
-            );
-          })}
-          {/* Viewport Indicator */}
-          <div className="absolute border-2 border-cyan-500/30 bg-cyan-500/5 rounded-sm transition-all duration-75"
-            style={{
-              left: `${Math.max(0, Math.min(100, ((-viewport.x / viewport.scale + 2500) / 5000) * 100))}%`,
-              top: `${Math.max(0, Math.min(100, ((-viewport.y / viewport.scale + 2500) / 5000) * 100))}%`,
-              width: `${Math.min(100, ((window.innerWidth / viewport.scale) / 5000) * 100)}%`,
-              height: `${Math.min(100, ((window.innerHeight / viewport.scale) / 5000) * 100)}%`
-            }}
-          />
-        </div>
-      </div>
-
-    </div>
-  );
-};
 
 const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: {
   node: IdeaNode,
@@ -2656,9 +570,1777 @@ const Inspector = ({ node, onClose, onUpdate, onDelete, onGenerateBrainstorm }: 
       </div>
     </div>
   );
-}
+};
 
-const container = document.getElementById('root');
-if (!container) throw new Error("Failed to find the root element");
-const root = createRoot(container);
-root.render(<App />);
+const App = () => {
+  // -- STATE --
+  const [nodes, setNodes] = useState<IdeaNode[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
+
+  // Selection & Inspection
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null); // Highlighted only
+  const [inspectorNodeId, setInspectorNodeId] = useState<string | null>(null); // Panel open
+  const [isMenuOpen, setIsMenuOpen] = useState(false); // Sidebar state
+
+  // Chat State
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    { role: 'model', text: 'Hola. Soy tu asistente de proyecto. Pregúntame sobre costes, tareas pendientes o resúmenes de tus ideas.' }
+  ]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+
+  // Persistence State
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [recognitionRetryCount, setRecognitionRetryCount] = useState(0);
+  const [recognitionStatus, setRecognitionStatus] = useState<string>("");
+
+  // Audio Visualizer State
+  const [audioData, setAudioData] = useState<Uint8Array>(new Uint8Array(0));
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const recognitionRef = useRef<any>(null);  // Para Speech Recognition
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // Interaction States
+  const [tempConnection, setTempConnection] = useState<{ sourceId: string, endX: number, endY: number } | null>(null);
+
+  // Undo/Redo History Stacks
+  const pastHistory = useRef<{ nodes: IdeaNode[], connections: Connection[] }[]>([]);
+  const futureHistory = useRef<{ nodes: IdeaNode[], connections: Connection[] }[]>([]);
+  // To force re-render on history change
+  const [historyVersion, setHistoryVersion] = useState(0);
+
+  // --- GESTURE & POINTER REFS ---
+  const canvasRef = useRef<HTMLDivElement>(null);
+
+  // Pointers map for multi-touch logic (ID -> {x, y})
+  const activePointers = useRef(new Map<number, { x: number, y: number }>());
+  const initialPinchDistance = useRef<number | null>(null);
+  const initialViewportScale = useRef<number>(1);
+
+  // Node Interaction Refs
+  const draggingNodeId = useRef<string | null>(null);
+  const dragStartPos = useRef<{ x: number, y: number } | null>(null);
+  const lastNodeTapTime = useRef<{ id: string, time: number } | null>(null);
+  const isDraggingNodeRef = useRef(false);
+
+  // Physics Refs
+  const simulationFrameRef = useRef<number | null>(null);
+  const alphaRef = useRef(0); // Simulation energy (0 to 1)
+
+  // -- PERSISTENCE & INITIALIZATION --
+
+  // Load Initial Data
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const storedNodes = await db.nodes.toArray();
+        const storedConnections = await db.connections.toArray();
+        const meta = await getMetadata();
+
+        if (storedNodes.length > 0) {
+          // Asegurar compatibilidad: inicializar attachments si no existe
+          const normalizedNodes = storedNodes.map(node => ({
+            ...node,
+            attachments: node.attachments || []
+          }));
+          setNodes(normalizedNodes);
+          setConnections(storedConnections);
+          if (meta.viewport) setViewport(meta.viewport);
+          if (meta.selectedNodeId) setSelectedNodeId(meta.selectedNodeId);
+        } else {
+          // No data -> Ready but empty
+          setViewport({ x: 0, y: 0, scale: 1 });
+        }
+        setIsLoaded(true);
+      } catch (e) {
+        console.error("Failed to load DB data", e);
+        setIsLoaded(true);
+      }
+    };
+    loadData();
+  }, []);
+
+  // Save Data on Change
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    // Debounce save
+    const timeoutId = setTimeout(async () => {
+      try {
+        await db.transaction('rw', db.nodes, db.connections, db.metadata, async () => {
+          // Full sync strategy: Clear and bulk add is safest for React state sync
+          // For very large datasets, we would optimize this to only save diffs, 
+          // but for < 10k nodes this is fine and robust.
+          await db.nodes.clear();
+          await db.nodes.bulkAdd(nodes);
+
+          await db.connections.clear();
+          await db.connections.bulkAdd(connections);
+
+          await saveViewport(viewport);
+          await saveSelectedNode(selectedNodeId);
+        });
+      } catch (e) {
+        console.error("Failed to save to DB", e);
+      }
+    }, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [nodes, connections, viewport, selectedNodeId, isLoaded]);
+
+
+  // -- HISTORY MANAGEMENT --
+
+  const saveSnapshot = useCallback(() => {
+    // Limit history size to 50
+    if (pastHistory.current.length > 50) pastHistory.current.shift();
+
+    pastHistory.current.push({
+      nodes: JSON.parse(JSON.stringify(nodes)), // Deep copy
+      connections: JSON.parse(JSON.stringify(connections))
+    });
+    futureHistory.current = []; // Clear redo stack on new action
+    setHistoryVersion(v => v + 1);
+  }, [nodes, connections]);
+
+  const undo = () => {
+    if (pastHistory.current.length === 0) return;
+
+    const previous = pastHistory.current.pop();
+    if (previous) {
+      futureHistory.current.push({
+        nodes: JSON.parse(JSON.stringify(nodes)),
+        connections: JSON.parse(JSON.stringify(connections))
+      });
+
+      setNodes(previous.nodes);
+      setConnections(previous.connections);
+      setHistoryVersion(v => v + 1);
+      wakeSimulation();
+    }
+  };
+
+  const redo = () => {
+    if (futureHistory.current.length === 0) return;
+
+    const next = futureHistory.current.pop();
+    if (next) {
+      pastHistory.current.push({
+        nodes: JSON.parse(JSON.stringify(nodes)),
+        connections: JSON.parse(JSON.stringify(connections))
+      });
+
+      setNodes(next.nodes);
+      setConnections(next.connections);
+      setHistoryVersion(v => v + 1);
+      wakeSimulation();
+    }
+  };
+
+  // -- PHYSICS ENGINE --
+
+  const wakeSimulation = useCallback(() => {
+    alphaRef.current = 1.0; // Reset energy
+    if (!simulationFrameRef.current) {
+      runSimulationStep();
+    }
+  }, []);
+
+  const runSimulationStep = () => {
+    if (alphaRef.current <= 0.05) {
+      simulationFrameRef.current = null;
+      return;
+    }
+
+    setNodes(prevNodes => {
+      const newNodes = prevNodes.map(n => ({ ...n }));
+      const nodeCount = newNodes.length;
+
+      const repulsionRadius = 250;
+      const repulsionStrength = 50 * alphaRef.current;
+      const springLength = 200;
+      const springStrength = 0.05 * alphaRef.current;
+
+      // Repulsion
+      for (let i = 0; i < nodeCount; i++) {
+        if (newNodes[i].id === draggingNodeId.current) continue;
+
+        for (let j = i + 1; j < nodeCount; j++) {
+          if (newNodes[j].id === draggingNodeId.current) continue;
+
+          const n1 = newNodes[i];
+          const n2 = newNodes[j];
+          const dx = n1.x - n2.x;
+          const dy = n1.y - n2.y;
+          const distSq = dx * dx + dy * dy || 1;
+          const dist = Math.sqrt(distSq);
+
+          if (dist < repulsionRadius) {
+            const force = (repulsionRadius - dist) / repulsionRadius;
+            const fx = (dx / dist) * force * repulsionStrength;
+            const fy = (dy / dist) * force * repulsionStrength;
+            n1.x += fx; n1.y += fy;
+            n2.x -= fx; n2.y -= fy;
+          }
+        }
+      }
+
+      // Springs (reading from closure state 'connections', might be slightly stale but ok for visual physics)
+      connections.forEach(conn => {
+        const source = newNodes.find(n => n.id === conn.sourceId);
+        const target = newNodes.find(n => n.id === conn.targetId);
+
+        if (source && target) {
+          if (source.id === draggingNodeId.current && target.id === draggingNodeId.current) return;
+
+          const dx = target.x - source.x;
+          const dy = target.y - source.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+          const displacement = dist - springLength;
+          const force = displacement * springStrength;
+
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+
+          if (source.id !== draggingNodeId.current) { source.x += fx; source.y += fy; }
+          if (target.id !== draggingNodeId.current) { target.x -= fx; target.y -= fy; }
+        }
+      });
+
+      return newNodes;
+    });
+
+    alphaRef.current *= 0.92;
+    simulationFrameRef.current = requestAnimationFrame(runSimulationStep);
+  };
+
+  useEffect(() => {
+    wakeSimulation();
+  }, [nodes.length, connections.length, wakeSimulation]);
+
+  // Cleanup audio resources when component unmounts
+  useEffect(() => {
+    return () => {
+      console.log("[Cleanup] Limpiando recursos de audio");
+      stopAudioAnalysis();
+    };
+  }, []);
+
+
+  // -- TREE TRAVERSAL HELPERS --
+
+  const getRootAncestor = (nodeId: string, allConnections: Connection[]): string => {
+    let currentId = nodeId;
+    let hasParent = true;
+    while (hasParent) {
+      const parentConn = allConnections.find(c => c.targetId === currentId);
+      if (parentConn) {
+        currentId = parentConn.sourceId;
+      } else {
+        hasParent = false;
+      }
+    }
+    return currentId;
+  };
+
+  const getDescendants = (rootId: string, allConnections: Connection[]): Set<string> => {
+    const descendants = new Set<string>();
+    const queue = [rootId];
+
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      descendants.add(curr);
+      const children = allConnections
+        .filter(c => c.sourceId === curr)
+        .map(c => c.targetId);
+      queue.push(...children);
+    }
+    return descendants;
+  };
+
+  const rootNodes = useMemo(() => {
+    const targetIds = new Set(connections.map(c => c.targetId));
+    return nodes.filter(n => !targetIds.has(n.id));
+  }, [nodes, connections]);
+
+  const visibleNodes = useMemo(() => {
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return nodes.filter(n =>
+        n.title.toLowerCase().includes(q) ||
+        n.category.toLowerCase().includes(q) ||
+        n.summary.toLowerCase().includes(q)
+      ).map(n => ({ ...n, isDimmed: false }));
+    }
+    if (!selectedNodeId) {
+      return rootNodes.map(n => ({ ...n, isDimmed: false }));
+    }
+    const rootId = getRootAncestor(selectedNodeId, connections);
+    const descendantIds = getDescendants(rootId, connections);
+    const validIds = new Set([rootId, ...descendantIds]);
+    return nodes.filter(n => validIds.has(n.id)).map(n => ({ ...n, isDimmed: false }));
+
+  }, [nodes, connections, selectedNodeId, searchQuery, rootNodes]);
+
+  const visibleConnections = useMemo(() => {
+    const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
+    return connections.filter(c => visibleNodeIds.has(c.sourceId) && visibleNodeIds.has(c.targetId));
+  }, [connections, visibleNodes]);
+
+  const getNodeStyle = (node: IdeaNode) => {
+    const isGlobalRoot = !connections.some(c => c.targetId === node.id);
+    if (isGlobalRoot) {
+      return "bg-cyan-500 text-white text-lg font-bold py-4 px-6 rounded-full shadow-cyan-500/30 border-4 border-cyan-200";
+    }
+    return "bg-amber-100 text-slate-800 text-xs font-medium py-2 px-4 rounded-full border-2 border-amber-300 shadow-sm";
+  };
+
+  const drawCurve = (x1: number, y1: number, x2: number, y2: number) => {
+    return `M ${x1} ${y1} C ${x1 + (x2 - x1) / 2} ${y1}, ${x2 - (x2 - x1) / 2} ${y2}, ${x2} ${y2}`;
+  };
+
+  // -- HELPERS --
+
+  const focusOnNode = (nodeId: string) => {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    setViewport({
+      x: cx - node.x * 1,
+      y: cy - node.y * 1,
+      scale: 1
+    });
+    setSelectedNodeId(nodeId);
+  };
+
+  const startAudioAnalysis = async () => {
+    // Cerrar stream anterior si existe
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(track => track.stop());
+      audioStreamRef.current = null;
+    }
+
+    // Cerrar AudioContext anterior si existe
+    if (audioContextRef.current) {
+      try {
+        await audioContextRef.current.close();
+      } catch (e) {
+        console.log("[Audio] Error cerrando AudioContext anterior:", e);
+      }
+      audioContextRef.current = null;
+    }
+
+    // Cancelar animación anterior si existe
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    try {
+      console.log("[Audio] Solicitando acceso al micrófono...");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log("[Audio] Acceso al micrófono concedido");
+
+      audioStreamRef.current = stream;
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioContext();
+      audioContextRef.current = audioCtx;
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 64;
+      analyserRef.current = analyser;
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      const updateVisualizer = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataArray);
+        setAudioData(new Uint8Array(dataArray));
+        animationFrameRef.current = requestAnimationFrame(updateVisualizer);
+      };
+      updateVisualizer();
+      console.log("[Audio] Visualizador de audio iniciado");
+    } catch (e: any) {
+      console.error("[Audio] Error al inicializar visualizador de audio:", e);
+      throw e; // Re-lanzar el error para que handleMicClick lo maneje
+    }
+  };
+
+  const stopAudioAnalysis = () => {
+    console.log("[Audio] Deteniendo análisis de audio...");
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      try {
+        audioContextRef.current.close().catch((e: any) => {
+          console.log("[Audio] Error cerrando AudioContext:", e);
+        });
+      } catch (e) {
+        console.log("[Audio] Error al intentar cerrar AudioContext:", e);
+      }
+      audioContextRef.current = null;
+    }
+
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log("[Audio] Track detenido:", track.kind);
+      });
+      audioStreamRef.current = null;
+    }
+
+    analyserRef.current = null;
+    setAudioData(new Uint8Array(0));
+    console.log("[Audio] Análisis de audio detenido");
+  };
+
+  // -- EXPORT HELPERS --
+
+  const exportAsImage = () => {
+    const nodesToExport = visibleNodes;
+    const connectionsToExport = visibleConnections;
+
+    if (nodesToExport.length === 0) {
+      alert('No hay nodos visibles para exportar');
+      return;
+    }
+
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        alert('Tu navegador no soporta exportación de imágenes');
+        return;
+      }
+
+      // Calculate bounds with padding
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      nodesToExport.forEach(n => {
+        minX = Math.min(minX, n.x - 120);
+        minY = Math.min(minY, n.y - 60);
+        maxX = Math.max(maxX, n.x + 120);
+        maxY = Math.max(maxY, n.y + 60);
+      });
+
+      const width = maxX - minX;
+      const height = maxY - minY;
+
+      // Validar tamaño máximo del canvas
+      const MAX_CANVAS_SIZE = 16384; // Límite seguro para la mayoría de navegadores
+      if (width > MAX_CANVAS_SIZE || height > MAX_CANVAS_SIZE) {
+        alert(`El mapa es demasiado grande para exportar (${Math.round(width)}×${Math.round(height)}px).\n\nIntenta:\n• Reducir el zoom\n• Filtrar nodos con búsqueda\n• Exportar en partes más pequeñas\n\nTamaño máximo: ${MAX_CANVAS_SIZE}×${MAX_CANVAS_SIZE}px`);
+        return;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+
+      // Background
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.translate(-minX, -minY);
+
+      // Draw Connections
+      connectionsToExport.forEach(conn => {
+        const source = nodesToExport.find(n => n.id === conn.sourceId);
+        const target = nodesToExport.find(n => n.id === conn.targetId);
+        if (!source || !target) return;
+
+        ctx.beginPath();
+        const isRootSource = !connections.some(c => c.targetId === source.id);
+
+        const x1 = source.x, y1 = source.y;
+        const x2 = target.x, y2 = target.y;
+        ctx.moveTo(x1, y1);
+        ctx.bezierCurveTo(x1 + (x2 - x1) / 2, y1, x2 - (x2 - x1) / 2, y2, x2, y2);
+
+        ctx.strokeStyle = isRootSource ? "#22d3ee" : "#a3e635";
+        ctx.lineWidth = isRootSource ? 3 : 1.5;
+        ctx.stroke();
+      });
+
+      // Draw Nodes
+      nodesToExport.forEach(node => {
+        const isGlobalRoot = !connections.some(c => c.targetId === node.id);
+
+        const w = 160;
+        const h = isGlobalRoot ? 60 : 40;
+        const x = node.x - w / 2;
+        const y = node.y - h / 2;
+
+        // Node Body
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(x, y, w, h, 999);
+        } else {
+          ctx.rect(x, y, w, h); // Fallback
+        }
+
+        ctx.fillStyle = isGlobalRoot ? '#06b6d4' : '#fef3c7';
+        ctx.fill();
+        ctx.strokeStyle = isGlobalRoot ? '#bae6fd' : '#fcd34d';
+        ctx.lineWidth = isGlobalRoot ? 4 : 2;
+        ctx.stroke();
+
+        // Node Text
+        ctx.fillStyle = isGlobalRoot ? '#ffffff' : '#1e293b';
+        ctx.font = isGlobalRoot ? 'bold 14px sans-serif' : '500 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const text = node.title.length > 20 ? node.title.substring(0, 20) + '...' : node.title;
+        ctx.fillText(text, node.x, node.y);
+      });
+
+      const link = document.createElement('a');
+      link.download = 'ideaverse-map.png';
+      link.href = canvas.toDataURL();
+      link.click();
+
+    } catch (error) {
+      console.error('Error al exportar imagen:', error);
+      alert('Error al exportar la imagen. Intenta con menos nodos visibles o reduce el zoom.');
+    }
+  };
+
+  const exportAsMarkdown = () => {
+    const nodesToExport = visibleNodes;
+    const connectionsToExport = visibleConnections;
+
+    const roots = nodesToExport.filter(n => !connectionsToExport.some(c => c.targetId === n.id));
+
+    let md = "# Exportación de Ideas\n\n";
+
+    const printNode = (nodeId: string, level: number) => {
+      const node = nodesToExport.find(n => n.id === nodeId);
+      if (!node) return;
+
+      const indent = "  ".repeat(level);
+      md += `${indent}- **${node.title}** (${node.status === 'scheduled' ? 'Agendado' : 'Borrador'})\n`;
+      if (node.summary && node.summary !== 'Generado por IA') md += `${indent}  > ${node.summary.replace(/\n/g, ' ')}\n`;
+      if (node.cost > 0) md += `${indent}  💰 Coste: ${node.cost}\n`;
+
+      if (node.checklist && node.checklist.length > 0) {
+        node.checklist.forEach(item => {
+          md += `${indent}  - [${item.done ? 'x' : ' '}] ${item.text}\n`;
+        });
+      }
+
+      const children = connectionsToExport
+        .filter(c => c.sourceId === nodeId)
+        .map(c => c.targetId);
+
+      children.forEach(childId => printNode(childId, level + 1));
+    };
+
+    roots.forEach(root => printNode(root.id, 0));
+
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const link = document.createElement('a');
+    link.download = 'ideaverse-export.md';
+    link.href = URL.createObjectURL(blob);
+    link.click();
+  };
+
+  const createManualProject = () => {
+    const title = prompt("Nombre del nuevo proyecto:");
+    if (!title || !title.trim()) return;
+
+    saveSnapshot();
+
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const startX = (cx - viewport.x) / viewport.scale;
+    const startY = (cy - viewport.y) / viewport.scale;
+
+    const newNode: IdeaNode = {
+      id: Date.now().toString(),
+      x: startX,
+      y: startY,
+      title: title,
+      summary: "Proyecto manual",
+      originalContext: "",
+      category: "Proyecto",
+      cost: 0,
+      links: [],
+      images: [],
+      attachments: [],
+      checklist: [],
+      type: 'text',
+      status: 'draft',
+      createdAt: Date.now()
+    };
+
+    setNodes(prev => [...prev, newNode]);
+    setSelectedNodeId(newNode.id);
+    setIsMenuOpen(false);
+    wakeSimulation();
+  };
+
+  // -- AI SERVICE --
+
+  const processInput = async (input: string | { image: string, prompt?: string } | { audio: string, mimeType: string }, isImage = false) => {
+    saveSnapshot(); // Save state before AI creates new nodes
+
+    let text = "";
+    let audioData: { audio: string, mimeType: string } | null = null;
+
+    if (isImage) {
+      const inp = input as { image: string, prompt?: string };
+      text = inp.prompt || "Analiza esta imagen y crea una estructura de idea relevante.";
+    } else if (typeof input === 'object' && 'audio' in input) {
+      audioData = input as { audio: string, mimeType: string };
+      text = ""; // El texto vendrá de la transcripción
+    } else {
+      text = typeof input === 'string' ? input : '';
+    }
+
+    text = (text || "").trim();
+
+    if (!text && !audioData) {
+      alert("No se detectó ningún texto para procesar. Intenta dictar nuevamente o escribe tu idea manualmente.");
+      return;
+    }
+
+    const lowerText = text.toLowerCase();
+    const isExplicitNewRoot =
+      lowerText.includes('crear nueva idea') ||
+      lowerText.includes('nuevo proyecto') ||
+      lowerText.includes('nueva idea principal') ||
+      lowerText.includes('crear proyecto');
+
+    setIsProcessing(true);
+    try {
+      let parentNodeId = isExplicitNewRoot ? null : selectedNodeId;
+      let parentNode = parentNodeId ? nodes.find(n => n.id === parentNodeId) : null;
+
+      if (!parentNode && !isExplicitNewRoot) {
+        parentNodeId = null;
+      }
+
+      // Construir Prompt Unificado
+      let fullPrompt = text;
+      if (parentNode) {
+        fullPrompt = `
+        CONTEXTO (La nueva idea es hija de este nodo):
+        - Título Padre: "${parentNode.title}"
+        - Resumen Padre: "${parentNode.summary}"
+        - Categoría Padre: "${parentNode.category}"
+
+        NUEVA IDEA (INPUT USUARIO):
+        "${text}"
+        
+        Instrucción: Genera el JSON para la NUEVA IDEA interpretándola dentro del contexto del padre.
+    `;
+      }
+
+      const responseText = await callAI({
+        prompt: fullPrompt,
+        image: isImage ? (input as any).image : undefined,
+        audio: audioData ? audioData.audio : undefined,
+        mimeType: audioData ? audioData.mimeType : undefined,
+        systemInstruction: SYSTEM_INSTRUCTION,
+        isJson: true
+      });
+
+      let data;
+      try {
+        data = JSON.parse(responseText || "{}");
+
+        // Debug logging
+        console.log("[ProcessInput] Respuesta AI parseada:", data);
+
+        // Validar y normalizar checklist
+        if (data.checklist) {
+          // Si es string, parsear manualmente
+          if (typeof data.checklist === 'string') {
+            console.warn("[ProcessInput] Checklist es string, parseando:", data.checklist);
+            const items = data.checklist
+              .split(/[,\n]/)
+              .map(s => s.trim())
+              .filter(s => s.length > 0)
+              .map(text => ({ text, done: false }));
+            data.checklist = items;
+          }
+
+          // Si es array de strings, convertir a objetos
+          if (Array.isArray(data.checklist) && data.checklist.length > 0) {
+            if (typeof data.checklist[0] === 'string') {
+              console.warn("[ProcessInput] Convirtiendo array de strings a objetos");
+              data.checklist = data.checklist.map(text => ({ text, done: false }));
+            }
+
+            // Normalizar campos (text, description, task, etc.)
+            data.checklist = data.checklist.map((item, i) => {
+              if (!item || typeof item !== 'object') {
+                console.warn(`[ProcessInput] Item ${i} inválido, skipping`);
+                return null;
+              }
+
+              const text = item.text || item.description || item.task || item.name || String(item);
+              return {
+                text: text.trim(),
+                done: item.done === true
+              };
+            }).filter(item => item !== null && item.text?.length > 0);
+          }
+
+          console.log("[ProcessInput] Checklist normalizado:", data.checklist);
+        }
+
+      } catch (parseError) {
+        console.error("Error parsing AI response:", parseError, "Response:", responseText);
+        throw new Error("La respuesta de la IA no es válida. Intenta de nuevo.");
+      }
+
+      let startX, startY;
+      if (parentNode) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 150;
+        startX = parentNode.x + Math.cos(angle) * distance;
+        startY = parentNode.y + Math.sin(angle) * distance;
+      } else {
+        const cx = window.innerWidth / 2;
+        const cy = window.innerHeight / 2;
+        startX = (cx - viewport.x) / viewport.scale;
+        startY = (cy - viewport.y) / viewport.scale;
+      }
+
+      const newNode: IdeaNode = {
+        id: Date.now().toString(),
+        x: startX,
+        y: startY,
+        title: data.title || "Nueva Idea",
+        summary: data.summary || text.substring(0, 50),
+        originalContext: text,
+        category: data.category || "General",
+        cost: data.cost || 0,
+        links: data.links || [],
+        images: isImage ? [(input as any).image] : [],
+        attachments: [],
+        checklist: (() => {
+          try {
+            if (!data.checklist || !Array.isArray(data.checklist)) {
+              return [];
+            }
+
+            return data.checklist
+              .map((item: any, i: number) => {
+                if (!item || typeof item !== 'object') {
+                  console.warn(`[ProcessInput] Skipping invalid checklist item ${i}:`, item);
+                  return null;
+                }
+
+                const text = item.text || '';
+                if (!text || typeof text !== 'string' || text.trim().length === 0) {
+                  console.warn(`[ProcessInput] Skipping item ${i} without text:`, item);
+                  return null;
+                }
+
+                return {
+                  id: `task-${Date.now()}-${i}`,
+                  text: text.trim(),
+                  done: item.done === true
+                };
+              })
+              .filter((item): item is CheckListItem => item !== null);
+
+          } catch (error) {
+            console.error("[ProcessInput] Error procesando checklist:", error);
+            return [];
+          }
+        })(),
+        type: isImage ? 'image' : 'text',
+        status: 'draft',
+        createdAt: Date.now()
+      };
+
+      setNodes(prev => [...prev, newNode]);
+
+      if (parentNode) {
+        setConnections(prev => {
+          // Prevenir conexiones duplicadas
+          const exists = prev.some(c => c.sourceId === parentNode.id && c.targetId === newNode.id);
+          if (exists) return prev;
+          return [...prev, {
+            id: `c-${Date.now()}`,
+            sourceId: parentNode.id,
+            targetId: newNode.id
+          }];
+        });
+      }
+
+      setSelectedNodeId(newNode.id);
+
+      if (!parentNode) {
+        const cx = window.innerWidth / 2;
+        const cy = window.innerHeight / 2;
+        setViewport({
+          x: cx - newNode.x * 1,
+          y: cy - newNode.y * 1,
+          scale: 1
+        });
+      }
+      wakeSimulation();
+
+    } catch (e: any) {
+      console.error("[ProcessInput] Error procesando idea:", e);
+
+      let errorMessage = "Error procesando la idea. ";
+
+      if (e && e.message) {
+        // Analizar el tipo de error
+        if (e.message.includes('API') || e.message.includes('servidor') || e.message.includes('fetch')) {
+          errorMessage += "No se pudo conectar con el servidor de IA. Verifica tu conexión a internet.";
+        } else if (e.message.includes('JSON') || e.message.includes('parsear') || e.message.includes('Invalid JSON')) {
+          errorMessage += "La respuesta de la IA no es válida. Esto puede deberse a un problema con el modelo de Gemini. Intenta de nuevo.";
+        } else if (e.message.includes('API Key') || e.message.includes('401') || e.message.includes('Invalid API Key')) {
+          errorMessage += "Error de autenticación. Verifica la configuración de la API Key en Vercel.";
+        } else if (e.message.includes('404') || e.message.includes('Model') || e.message.includes('not found')) {
+          errorMessage += "El modelo de IA no está disponible. Esto puede deberse a un problema con la versión de Gemini. Intenta de nuevo.";
+        } else if (e.message.includes('429') || e.message.includes('Rate limit')) {
+          errorMessage += "Límite de solicitudes excedido. Por favor, espera unos momentos e intenta de nuevo.";
+        } else if (e.message.includes('Respuesta inválida') || e.message.includes('No text field')) {
+          errorMessage += "La respuesta del servidor no tiene el formato esperado. Esto puede indicar un problema con el modelo de Gemini.";
+        } else {
+          errorMessage += e.message;
+        }
+      } else {
+        errorMessage += "Error desconocido. Intenta de nuevo.";
+      }
+
+      console.error("[ProcessInput] Mensaje de error para usuario:", errorMessage);
+      alert(errorMessage);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const MAX_RECOGNITION_RETRIES = 3;
+
+  const handleMicClick = async () => {
+    console.log("[Speech] handleMicClick llamado, isRecording:", isRecording);
+
+    // Verificar soporte del navegador
+    const hasSpeechRecognition = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
+    console.log("[Speech] Soporte de reconocimiento de voz:", hasSpeechRecognition);
+    console.log("[Speech] webkitSpeechRecognition:", 'webkitSpeechRecognition' in window);
+    console.log("[Speech] SpeechRecognition:", 'SpeechRecognition' in window);
+
+    if (!hasSpeechRecognition) {
+      const text = prompt("Tu navegador no soporta dictado nativo simple. Escribe tu idea:");
+      if (text && text.trim()) {
+        processInput(text.trim());
+      } else if (text !== null) {
+        alert("No ingresaste ninguna idea. Intenta de nuevo.");
+      }
+      return;
+    }
+
+    // Verificar que getUserMedia esté disponible
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.error("[Speech] getUserMedia no está disponible");
+      alert("Tu navegador no soporta acceso al micrófono. Por favor, usa Chrome, Edge o Safari.");
+      return;
+    }
+
+    if (isRecording) {
+      setIsRecording(false);
+      setRecognitionStatus("");
+      stopAudioAnalysis();
+      // Detener reconocimiento si está activo
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.log("[Speech] Error al detener:", e);
+        }
+        recognitionRef.current = null;
+      }
+      const startRecording = async () => {
+        try {
+          // Reuse existing stream if available (from visualizer)
+          let stream = audioStreamRef.current;
+          if (!stream) {
+            await startAudioAnalysis();
+            stream = audioStreamRef.current;
+          }
+
+          if (!stream) throw new Error("No audio stream available");
+
+          // Detect supported mime type
+          const mimeType = [
+            'audio/webm;codecs=opus',
+            'audio/webm',
+            'audio/mp4',
+            'audio/ogg',
+            'audio/wav'
+          ].find(type => MediaRecorder.isTypeSupported(type)) || '';
+
+          const options = mimeType ? { mimeType } : undefined;
+          console.log("[Audio] Usando mimeType:", mimeType || "default");
+
+          const mediaRecorder = new MediaRecorder(stream, options);
+          mediaRecorderRef.current = mediaRecorder;
+          audioChunksRef.current = [];
+
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              audioChunksRef.current.push(event.data);
+            }
+          };
+
+          mediaRecorder.start();
+          setIsRecording(true);
+          setRecognitionStatus("Grabando... (Toca para terminar)");
+        } catch (e) {
+          console.error("Error starting recording:", e);
+          alert("No se pudo iniciar la grabación. Verifica los permisos del micrófono.");
+          setIsRecording(false);
+          setRecognitionStatus("");
+        }
+      };
+
+      const stopRecording = (): Promise<{ audio: string, mimeType: string }> => {
+        return new Promise((resolve, reject) => {
+          const mediaRecorder = mediaRecorderRef.current;
+          if (!mediaRecorder) {
+            reject("No media recorder");
+            return;
+          }
+
+          mediaRecorder.onstop = () => {
+            const mimeType = mediaRecorder.mimeType || 'audio/webm';
+            const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+            console.log("[Audio] Grabación terminada. Tamaño:", audioBlob.size, "Tipo:", mimeType);
+
+            const reader = new FileReader();
+            reader.readAsDataURL(audioBlob);
+            reader.onloadend = () => {
+              const base64String = reader.result as string;
+              resolve({ audio: base64String, mimeType });
+            };
+            reader.onerror = reject;
+          };
+
+          mediaRecorder.stop();
+          setIsRecording(false);
+          setRecognitionStatus("Procesando audio...");
+        });
+      };
+
+      const handleMicClick = async () => {
+        console.log("[Speech] handleMicClick llamado, isRecording:", isRecording);
+
+        if (isProcessing) return;
+
+        if (isRecording) {
+          // STOP RECORDING
+          try {
+            const { audio, mimeType } = await stopRecording();
+            await processInput({ audio, mimeType });
+          } catch (e) {
+            console.error("Error processing audio:", e);
+            alert("Error al procesar el audio.");
+            setRecognitionStatus("");
+          }
+        } else {
+          // START RECORDING
+
+          // Verificar HTTPS
+          if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+            alert("El micrófono requiere HTTPS.");
+            return;
+          }
+
+          // Verificar permisos explícitamente
+          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+          if (navigator.permissions && navigator.permissions.query) {
+            try {
+              const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+              if (permissionStatus.state === 'denied') {
+                let denyMessage = "🚫 PERMISOS BLOQUEADOS\n\n";
+                denyMessage += "Debes habilitar el micrófono manualmente en la configuración del navegador.\n\n";
+                denyMessage += "1. Toca el candado 🔒 junto a la URL\n";
+                denyMessage += "2. Busca 'Permisos' o 'Configuración'\n";
+                denyMessage += "3. Activa el Micrófono\n";
+                denyMessage += "4. Recarga la página";
+                alert(denyMessage);
+                return;
+              }
+            } catch (e) {
+              // Ignore permission query error
+            }
+          }
+
+          await startRecording();
+        }
+      };
+
+      const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0]) {
+          const file = e.target.files[0];
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            const base64 = reader.result as string;
+            const compressed = await compressImage(base64);
+            processInput({ image: compressed, prompt: "Crea una idea basada en esta imagen" }, true);
+          };
+          reader.readAsDataURL(file);
+        }
+      };
+
+      // -- GESTURE HELPERS --
+
+      const getPointersDistance = () => {
+        const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
+        if (points.length < 2) return 0;
+        return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+      };
+
+      const getPointersCenter = () => {
+        const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
+        let x = 0, y = 0;
+        points.forEach(p => { x += p.x; y += p.y; });
+        return { x: x / points.length, y: y / points.length };
+      };
+
+      // -- POINTER EVENTS (CANVAS) --
+
+      const handlePointerDown = (e: React.PointerEvent) => {
+        activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        canvasRef.current?.setPointerCapture(e.pointerId);
+        if (activePointers.current.size === 2) {
+          initialPinchDistance.current = getPointersDistance();
+          initialViewportScale.current = viewport.scale;
+        }
+      };
+
+      const handlePointerMove = (e: React.PointerEvent) => {
+        if (!activePointers.current.has(e.pointerId)) return;
+
+        const prevPos = activePointers.current.get(e.pointerId)!;
+        activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        if (draggingNodeId.current) {
+          const dx = e.clientX - prevPos.x;
+          const dy = e.clientY - prevPos.y;
+
+          if (!isDraggingNodeRef.current && dragStartPos.current) {
+            const dist = Math.hypot(e.clientX - dragStartPos.current.x, e.clientY - dragStartPos.current.y);
+            if (dist > 5) {
+              isDraggingNodeRef.current = true;
+              saveSnapshot(); // Save state before dragging actually changes things significantly
+            }
+          }
+
+          if (isDraggingNodeRef.current) {
+            setNodes(prev => prev.map(n => {
+              if (n.id === draggingNodeId.current) {
+                return { ...n, x: n.x + dx / viewport.scale, y: n.y + dy / viewport.scale };
+              }
+              return n;
+            }));
+          }
+          return;
+        }
+
+        if (tempConnection) {
+          const logicalX = (e.clientX - viewport.x) / viewport.scale;
+          const logicalY = (e.clientY - viewport.y) / viewport.scale;
+          setTempConnection(prev => prev ? { ...prev, endX: logicalX, endY: logicalY } : null);
+          return;
+        }
+
+        if (activePointers.current.size === 2 && initialPinchDistance.current) {
+          const currentDist = getPointersDistance();
+          const center = getPointersCenter();
+          const scaleFactor = currentDist / initialPinchDistance.current;
+          let newScale = initialViewportScale.current * scaleFactor;
+          newScale = Math.min(Math.max(0.1, newScale), 5);
+          const newX = center.x - (center.x - viewport.x) * (newScale / viewport.scale);
+          const newY = center.y - (center.y - viewport.y) * (newScale / viewport.scale);
+          setViewport({ x: newX, y: newY, scale: newScale });
+          return;
+        }
+
+        if (activePointers.current.size === 1) {
+          const dx = e.clientX - prevPos.x;
+          const dy = e.clientY - prevPos.y;
+          setViewport(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+        }
+      };
+
+      const handlePointerUp = (e: React.PointerEvent) => {
+        if (tempConnection) {
+          const targetElement = document.elementFromPoint(e.clientX, e.clientY);
+          const targetNodeElement = targetElement?.closest('[data-node-id]');
+
+          if (targetNodeElement) {
+            const targetId = targetNodeElement.getAttribute('data-node-id');
+            if (targetId && targetId !== tempConnection.sourceId) {
+              // Prevenir conexiones duplicadas y ciclos
+              const existingConnection = connections.find(
+                c => c.sourceId === tempConnection.sourceId && c.targetId === targetId
+              );
+              if (!existingConnection) {
+                // Prevenir ciclos: verificar que el target no sea ancestro del source
+                const wouldCreateCycle = (sourceId: string, targetId: string): boolean => {
+                  const visited = new Set<string>();
+                  const checkCycle = (currentId: string): boolean => {
+                    if (currentId === sourceId) return true;
+                    if (visited.has(currentId)) return false;
+                    visited.add(currentId);
+                    const children = connections
+                      .filter(c => c.sourceId === currentId)
+                      .map(c => c.targetId);
+                    return children.some(childId => checkCycle(childId));
+                  };
+                  return checkCycle(targetId);
+                };
+
+                if (!wouldCreateCycle(tempConnection.sourceId, targetId)) {
+                  saveSnapshot();
+                  setConnections(prev => {
+                    const newConns = [...prev, {
+                      id: `c-${Date.now()}`,
+                      sourceId: tempConnection.sourceId,
+                      targetId: targetId
+                    }];
+                    setTimeout(wakeSimulation, 0);
+                    return newConns;
+                  });
+                }
+              }
+            }
+          }
+          setTempConnection(null);
+        }
+
+        if (draggingNodeId.current) {
+          if (!isDraggingNodeRef.current) {
+            const nodeId = draggingNodeId.current;
+            const now = Date.now();
+            const lastTap = lastNodeTapTime.current;
+            if (lastTap && lastTap.id === nodeId && (now - lastTap.time) < 300) {
+              setInspectorNodeId(nodeId);
+              lastNodeTapTime.current = null;
+            } else {
+              setSelectedNodeId(nodeId);
+              lastNodeTapTime.current = { id: nodeId, time: now };
+            }
+          } else {
+            wakeSimulation();
+          }
+          draggingNodeId.current = null;
+          isDraggingNodeRef.current = false;
+          dragStartPos.current = null;
+        } else {
+          const target = e.target as HTMLElement;
+          if (!target.closest('.node-interactive') && !tempConnection) {
+            setInspectorNodeId(null);
+          }
+        }
+
+        activePointers.current.delete(e.pointerId);
+        if (activePointers.current.size < 2) {
+          initialPinchDistance.current = null;
+        }
+        canvasRef.current?.releasePointerCapture(e.pointerId);
+      };
+
+      // -- NODE EVENTS --
+
+      const handleNodePointerDown = (e: React.PointerEvent, nodeId: string) => {
+        e.preventDefault();
+        draggingNodeId.current = nodeId;
+        isDraggingNodeRef.current = false;
+        dragStartPos.current = { x: e.clientX, y: e.clientY };
+      };
+
+      const startConnection = (e: React.PointerEvent, nodeId: string) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const node = nodes.find(n => n.id === nodeId);
+        if (!node) return;
+        setTempConnection({ sourceId: nodeId, endX: node.x, endY: node.y });
+      };
+
+      // -- RENDER LOGIC (FILTERING) --
+
+
+
+      // -- CHAT HANDLER --
+
+      const handleSendChatMessage = async (userText: string) => {
+        setChatMessages(prev => [...prev, { role: 'user', text: userText }]);
+        setIsChatLoading(true);
+
+        try {
+          // Prepare Context (simplified structure to save tokens)
+          const contextData = visibleNodes.map(n => ({
+            title: n.title,
+            summary: n.summary,
+            category: n.category,
+            cost: n.cost,
+            checklist: n.checklist,
+            status: n.status,
+            isRoot: !connections.some(c => c.targetId === n.id)
+          }));
+
+          const prompt = `
+          Eres un asistente experto analizando el siguiente mapa mental (JSON):
+          ${JSON.stringify(contextData)}
+
+          Usuario: "${userText}"
+
+          Responde de forma útil, concisa y directa basándote SOLAMENTE en los datos proporcionados.
+          `;
+
+          const responseText = await callAI({
+            prompt: prompt
+          });
+
+          setChatMessages(prev => [...prev, { role: 'model', text: responseText }]);
+        } catch (e) {
+          setChatMessages(prev => [...prev, { role: 'model', text: 'Lo siento, hubo un error al conectar con la IA.' }]);
+        } finally {
+          setIsChatLoading(false);
+        }
+      };
+
+      return (
+        <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none">
+
+          {/* SIDEBAR MENU */}
+          <div
+            className={`fixed inset-y-0 left-0 w-72 bg-white shadow-2xl transform transition-transform duration-300 z-[100] flex flex-col ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}
+          >
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="font-bold text-lg text-slate-800">Mis Proyectos</h2>
+              <button onClick={() => setIsMenuOpen(false)} className="p-2 hover:bg-slate-100 rounded-full">
+                <X className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2">
+              <button
+                onClick={createManualProject}
+                className="w-full p-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 text-slate-500 hover:bg-slate-50 flex items-center justify-center gap-2 font-semibold text-sm transition-colors"
+              >
+                <Plus className="w-4 h-4" /> Nuevo Proyecto
+              </button>
+              {rootNodes.length === 0 && <div className="p-4 text-sm text-slate-400 text-center">No hay proyectos raíz.</div>}
+              {rootNodes.map(node => (
+                <button
+                  key={node.id}
+                  onClick={() => { focusOnNode(node.id); setIsMenuOpen(false); }}
+                  className={`w-full text-left p-3 rounded-lg mb-1 flex items-center gap-3 transition-colors ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'bg-cyan-50 border border-cyan-200' : 'hover:bg-slate-50 border border-transparent'}`}
+                >
+                  <Disc className={`w-4 h-4 ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-600' : 'text-slate-400'}`} />
+                  <div className="flex flex-col overflow-hidden">
+                    <span className={`font-semibold text-sm truncate ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-800' : 'text-slate-700'}`}>{node.title}</span>
+                    <span className="text-[10px] text-slate-400 uppercase truncate">{node.category}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {/* EXPORT SECTION */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-2">
+              <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Exportar Vista</h3>
+              <button onClick={() => { exportAsImage(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
+                <Download className="w-4 h-4 text-cyan-600" />
+                Imagen (PNG)
+              </button>
+              <button onClick={() => { exportAsMarkdown(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
+                <FileText className="w-4 h-4 text-violet-500" />
+                Markdown (Texto)
+              </button>
+            </div>
+          </div>
+
+          {/* HEADER UI */}
+          <div className="absolute top-4 left-4 right-4 z-50 pointer-events-none flex items-start justify-between gap-4">
+            <div className="flex gap-2 pointer-events-auto">
+              <button onClick={() => setIsMenuOpen(true)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50">
+                <Menu className="w-5 h-5 text-slate-700" />
+              </button>
+              {selectedNodeId && (
+                <button onClick={() => setSelectedNodeId(null)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50 flex items-center gap-2 px-4">
+                  <ArrowLeft className="w-5 h-5 text-slate-700" />
+                  <span className="text-xs font-bold text-slate-600 hidden sm:inline">Todos</span>
+                </button>
+              )}
+              <div className="flex bg-white rounded-full shadow-md border border-slate-200 ml-2">
+                <button onClick={undo} disabled={pastHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-l-full disabled:opacity-30">
+                  <Undo className="w-5 h-5 text-slate-600" />
+                </button>
+                <div className="w-px bg-slate-200 my-2"></div>
+                <button onClick={redo} disabled={futureHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-r-full disabled:opacity-30">
+                  <Redo className="w-5 h-5 text-slate-600" />
+                </button>
+              </div>
+            </div>
+
+            <div className="pointer-events-auto flex-1 max-w-md">
+              <div className="bg-white/90 backdrop-blur-md border border-slate-200 rounded-full p-3 shadow-lg flex items-center gap-2 w-full">
+                <Search className="w-5 h-5 text-slate-400" />
+                <input
+                  className="bg-transparent border-none outline-none text-slate-700 w-full placeholder-slate-400 text-sm"
+                  placeholder="Buscar..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* CANVAS LAYER */}
+          <div
+            ref={canvasRef}
+            className="absolute inset-0 touch-none bg-slate-50"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+          >
+            <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
+            <div style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`, transformOrigin: '0 0', width: '100%', height: '100%', willChange: 'transform' }} className="relative w-full h-full">
+
+              <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none">
+                {visibleConnections.map(conn => {
+                  const source = nodes.find(n => n.id === conn.sourceId);
+                  const target = nodes.find(n => n.id === conn.targetId);
+                  if (!source || !target) return null;
+                  const isRootSource = !connections.some(c => c.targetId === source.id);
+                  return <path key={conn.id} d={drawCurve(source.x, source.y, target.x, target.y)} stroke={isRootSource ? "#22d3ee" : "#a3e635"} strokeWidth={isRootSource ? "3" : "1.5"} fill="none" strokeLinecap="round" />;
+                })}
+                {tempConnection && <path d={drawCurve(nodes.find(n => n.id === tempConnection.sourceId)!.x, nodes.find(n => n.id === tempConnection.sourceId)!.y, tempConnection.endX, tempConnection.endY)} stroke="#94a3b8" strokeWidth="2" strokeDasharray="5,5" fill="none" />}
+              </svg>
+
+              {visibleNodes.map((node: any) => (
+                <div
+                  key={node.id}
+                  data-node-id={node.id}
+                  className={`node-interactive absolute group flex justify-center items-center touch-none ${node.isDimmed ? 'opacity-20 blur-sm grayscale' : 'opacity-100'} ${selectedNodeId === node.id ? 'z-50' : 'z-10'} transition-transform duration-75`}
+                  style={{ transform: `translate(${node.x}px, ${node.y}px) translate(-50%, -50%)` }}
+                  onPointerDown={(e) => handleNodePointerDown(e, node.id)}
+                >
+                  <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)}>
+                    <Plus className="w-4 h-4 text-white" />
+                  </div>
+                  <div className={`${getNodeStyle(node)} shadow-md flex items-center gap-2 min-w-max max-w-[200px] relative overflow-hidden`}>
+                    {node.images && node.images.length > 0 && (
+                      <img src={node.images[0]} alt="" className="w-8 h-8 rounded-full object-cover border border-white/50" />
+                    )}
+                    <div className="flex flex-col">
+                      <span className="truncate max-w-[180px]">{node.title}</span>
+                      {node.checklist && node.checklist.length > 0 && (
+                        <div className="flex items-center gap-1 text-[10px] opacity-70">
+                          <CheckSquare className="w-3 h-3" />
+                          <span>{node.checklist.filter((i: any) => i.done).length}/{node.checklist.length}</span>
+                        </div>
+                      )}
+                    </div>
+                    {node.status === 'scheduled' && <div className="w-2 h-2 rounded-full bg-blue-600" />}
+                    {selectedNodeId === node.id && <div className="absolute inset-0 -m-1 rounded-full border-2 border-blue-400 animate-pulse pointer-events-none" />}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* INPUT BAR (MIC & CAMERA) */}
+          <div
+            className={`fixed left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
+              }`}
+            style={{
+              bottom: inspectorNodeId
+                ? 'calc(85vh + 1rem)'
+                : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
+              transform: 'translateZ(0)',
+            }}
+          >
+
+            {/* Camera Button */}
+            <div className="pointer-events-auto relative">
+              <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="absolute inset-0 opacity-0 z-10 cursor-pointer" />
+              <button className="w-12 h-12 bg-white rounded-full shadow-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 active:scale-95 transition-transform text-slate-600">
+                <Camera className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Mic Button */}
+            <div className="flex flex-col items-center gap-2">
+              <div className="bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] truncate">
+                {selectedNodeId
+                  ? `Añadiendo a: ${nodes.find(n => n.id === selectedNodeId)?.title}`
+                  : 'Creando Nuevo Proyecto'}
+              </div>
+              <button
+                onClick={handleMicClick}
+                disabled={isProcessing}
+                className={`
+                relative pointer-events-auto flex items-center justify-center w-16 h-16 rounded-full shadow-2xl
+                transition-all duration-300 transform hover:scale-105 active:scale-95 overflow-hidden
+                ${isRecording ? 'bg-red-500 ring-4 ring-red-200' : 'bg-cyan-600'}
+                ${isProcessing ? 'opacity-70' : ''}
+                border-2 border-white
+            `}
+              >
+                {isProcessing ? (
+                  <BrainCircuit className="w-8 h-8 animate-spin text-white" />
+                ) : isRecording ? (
+                  <div className="flex items-center justify-center gap-[2px] h-8">
+                    {[...Array(5)].map((_, i) => {
+                      const val = audioData[i * 4] || 0;
+                      const height = Math.max(20, (val / 255) * 100);
+                      return <div key={i} className="w-1 bg-white rounded-full transition-all duration-75" style={{ height: `${height}%` }} />
+                    })}
+                  </div>
+                ) : (
+                  <Mic className="w-8 h-8 text-white" />
+                )}
+              </button>
+              {/* Recognition Status Indicator */}
+              {recognitionStatus && (
+                <div className="bg-orange-500/90 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] text-center">
+                  {recognitionStatus}
+                </div>
+              )}
+            </div>
+
+
+            {/* Chat Button Placeholder to balance layout */}
+            <div className="w-12 h-12 pointer-events-none opacity-0" />
+          </div>
+
+          {/* FLOATING CHAT BUTTON */}
+          <button
+            onClick={() => setIsChatOpen(true)}
+            className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
+              }`}
+            style={{
+              bottom: inspectorNodeId
+                ? 'calc(85vh + 1rem)'
+                : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
+              transform: 'translateZ(0)',
+            }}
+          >
+            <MessageCircle className="w-7 h-7" />
+          </button>
+
+          {/* CHAT OVERLAY */}
+          {isChatOpen && (
+            <div className="fixed inset-0 z-[60] bg-black/20 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4">
+              <div className="bg-white w-full sm:max-w-md h-[80vh] sm:h-[600px] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
+                {/* Header */}
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 bg-cyan-100 rounded-full flex items-center justify-center">
+                      <Sparkles className="w-4 h-4 text-cyan-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-800">Asistente IA</h3>
+                      <p className="text-[10px] text-slate-500">Pregunta sobre tu proyecto actual</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setIsChatOpen(false)} className="p-2 hover:bg-slate-200 rounded-full">
+                    <X className="w-5 h-5 text-slate-500" />
+                  </button>
+                </div>
+
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
+                  {chatMessages.map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${msg.role === 'user' ? 'bg-cyan-600 text-white rounded-tr-sm' : 'bg-white border border-slate-100 shadow-sm text-slate-700 rounded-tl-sm'}`}>
+                        {msg.text}
+                      </div>
+                    </div>
+                  ))}
+                  {isChatLoading && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-slate-100 p-3 rounded-2xl rounded-tl-sm shadow-sm flex gap-1">
+                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" />
+                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-100" />
+                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-200" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Input */}
+                <div className="p-4 bg-white border-t border-slate-100">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const input = (e.target as HTMLFormElement).elements.namedItem('msg') as HTMLInputElement;
+                      if (input.value.trim()) {
+                        handleSendChatMessage(input.value);
+                        input.value = '';
+                      }
+                    }}
+                    className="flex gap-2"
+                  >
+                    <input
+                      name="msg"
+                      className="flex-1 bg-slate-100 rounded-full px-4 text-sm outline-none focus:ring-2 ring-cyan-200"
+                      placeholder="Escribe tu pregunta..."
+                      autoComplete="off"
+                    />
+                    <button type="submit" disabled={isChatLoading} className="p-2 bg-cyan-600 text-white rounded-full disabled:opacity-50">
+                      <Send className="w-5 h-5" />
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* UI: INSPECTOR */}
+          {inspectorNodeId && (
+            <Inspector
+              node={nodes.find(n => n.id === inspectorNodeId)!}
+              onClose={() => setInspectorNodeId(null)}
+              onUpdate={(updatedNode) => {
+                saveSnapshot();
+                setNodes(prev => prev.map(n => n.id === updatedNode.id ? updatedNode : n));
+              }}
+              onDelete={() => {
+                saveSnapshot();
+                setNodes(prev => prev.filter(n => n.id !== inspectorNodeId));
+                setConnections(prev => prev.filter(c => c.sourceId !== inspectorNodeId && c.targetId !== inspectorNodeId));
+                setInspectorNodeId(null);
+                setSelectedNodeId(null);
+              }}
+              onGenerateBrainstorm={async (node) => {
+                setIsProcessing(true);
+                try {
+                  const prompt = `Genera 3 ideas breves y creativas relacionadas con: "${node.title}".`;
+
+                  const systemInstruction = `Eres un generador de ideas creativas.
+Debes devolver EXACTAMENTE un array JSON de 3 strings.
+Cada string debe ser una idea breve (máximo 5 palabras).
+
+Formato REQUERIDO (sin texto adicional):
+["idea 1", "idea 2", "idea 3"]
+
+Ejemplo correcto:
+["Automatizar con scripts", "Integrar con Zapier", "Crear dashboard visual"]
+
+NO devuelvas objetos, solo strings.
+NO añadas texto explicativo antes o después del JSON.`;
+
+                  const responseText = await callAI({
+                    prompt: prompt,
+                    systemInstruction: systemInstruction,
+                    isJson: true
+                  });
+
+                  let ideas;
+                  try {
+                    let parsed = JSON.parse(responseText);
+
+                    // Debug logging
+                    console.log("[Brainstorm] Respuesta parseada:", parsed);
+                    console.log("[Brainstorm] Tipo:", typeof parsed);
+                    console.log("[Brainstorm] Es array:", Array.isArray(parsed));
+
+                    // Validar estructura
+                    // Caso 1: Si es un objeto con propiedad 'ideas' o similar
+                    if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+                      const possibleArrays = ['ideas', 'items', 'suggestions', 'list', 'data'];
+                      let found = false;
+
+                      for (const key of possibleArrays) {
+                        if (Array.isArray(parsed[key])) {
+                          console.warn(`[Brainstorm] Extrayendo array de propiedad '${key}'`);
+                          parsed = parsed[key];
+                          found = true;
+                          break;
+                        }
+                      }
+
+                      if (!found) {
+                        throw new Error(`Respuesta es un objeto, no un array. Keys: ${Object.keys(parsed).join(', ')}`);
+                      }
+                    }
+
+                    // Caso 2: Si no es array, error
+                    if (!Array.isArray(parsed)) {
+                      throw new Error(`Respuesta no es un array. Tipo: ${typeof parsed}`);
+                    }
+
+                    // Caso 3: Si está vacío
+                    if (parsed.length === 0) {
+                      throw new Error("El array de ideas está vacío");
+                    }
+
+                    // Normalizar: Convertir todo a strings
+                    ideas = parsed.map((item, i) => {
+                      // Si es string, OK
+                      if (typeof item === 'string') {
+                        return item.trim();
+                      }
+
+                      // Si es objeto, intentar extraer texto
+                      if (typeof item === 'object' && item !== null) {
+                        const text = item.title || item.idea || item.text || item.name || item.description;
+                        if (text && typeof text === 'string') {
+                          console.warn(`[Brainstorm] Item ${i} es objeto, extrayendo texto de propiedad`);
+                          return text.trim();
+                        }
+
+                        console.warn(`[Brainstorm] Item ${i} es objeto sin propiedad de texto, usando JSON.stringify`);
+                        return JSON.stringify(item);
+                      }
+
+                      // Convertir cualquier otra cosa a string
+                      return String(item);
+                    }).filter(text => text.length > 0);
+
+                    // Validar que tengamos al menos 1 idea
+                    if (ideas.length === 0) {
+                      throw new Error("No se pudieron extraer ideas válidas del array");
+                    }
+
+                    console.log(`[Brainstorm] ${ideas.length} ideas válidas extraídas:`, ideas);
+
+                  } catch (parseError: any) {
+                    console.error("[Brainstorm] Error completo:", parseError);
+                    console.error("[Brainstorm] Respuesta recibida:", responseText);
+
+                    // Intentar extraer JSON de markdown
+                    const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/);
+                    if (jsonMatch) {
+                      console.warn("[Brainstorm] Detectado JSON en markdown, reintentando...");
+                      try {
+                        const extracted = JSON.parse(jsonMatch[1]);
+                        if (Array.isArray(extracted)) {
+                          ideas = extracted.map(String);
+                          console.log("[Brainstorm] ✅ Extraído de markdown exitosamente");
+                        }
+                      } catch {
+                        throw new Error(`Error parseando JSON dentro de markdown: ${parseError.message}`);
+                      }
+                    } else {
+                      throw new Error(`Error parseando respuesta como JSON: ${parseError.message}. Respuesta: ${responseText.substring(0, 100)}...`);
+                    }
+                  }
+
+                  saveSnapshot();
+                  const newNodes: IdeaNode[] = [];
+                  const newConns: Connection[] = [];
+
+                  ideas.forEach((ideaText: string, i: number) => {
+                    const angle = (Math.PI * 2 / 3) * i;
+                    const dist = 180;
+                    const newNode: IdeaNode = {
+                      id: Date.now() + i + '',
+                      x: node.x + Math.cos(angle) * dist,
+                      y: node.y + Math.sin(angle) * dist,
+                      title: ideaText,
+                      summary: "Generado por IA",
+                      originalContext: "",
+                      category: node.category,
+                      cost: 0,
+                      links: [],
+                      checklist: [],
+                      images: [],
+                      attachments: [],
+                      type: 'text',
+                      status: 'draft',
+                      createdAt: Date.now()
+                    };
+                    newNodes.push(newNode);
+                    newConns.push({ id: `c-${Date.now()}-${i}`, sourceId: node.id, targetId: newNode.id });
+                  });
+
+                  setNodes(prev => [...prev, ...newNodes]);
+                  setConnections(prev => {
+                    // Filtrar conexiones duplicadas
+                    const existingIds = new Set(prev.map(c => `${c.sourceId}-${c.targetId}`));
+                    const uniqueConns = newConns.filter(c => !existingIds.has(`${c.sourceId}-${c.targetId}`));
+                    return [...prev, ...uniqueConns];
+                  });
+                  wakeSimulation();
+                } catch (e: any) {
+                  console.error("[Brainstorm] Error completo:", e);
+
+                  // Construir mensaje de error útil
+                  let errorMessage = "Error generando ideas";
+
+                  if (e.message) {
+                    if (e.message.includes('parsear') || e.message.includes('JSON')) {
+                      errorMessage = "La IA devolvió un formato inválido. Intenta de nuevo.";
+                    } else if (e.message.includes('array')) {
+                      errorMessage = "La IA no devolvió una lista de ideas. Intenta de nuevo.";
+                    } else if (e.message.includes('API') || e.message.includes('fetch')) {
+                      errorMessage = "Error de conexión con el servidor. Verifica tu internet.";
+                    } else {
+                      errorMessage = `Error: ${e.message}`;
+                    }
+                  }
+
+                  console.error("[Brainstorm] Mensaje para usuario:", errorMessage);
+                  alert(errorMessage);
+                } finally {
+                  setIsProcessing(false);
+                }
+              }}
+            />
+          )}
+
+          {/* MINIMAP - Hidden on mobile by default, visible on larger screens */}
+          <div className="absolute bottom-8 left-8 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-lg p-2 w-48 h-32 overflow-hidden pointer-events-none hidden md:block opacity-80 hover:opacity-100 transition-opacity">
+            <div className="relative w-full h-full bg-slate-50/50 rounded-lg">
+              {nodes.map(n => {
+                // Simple projection: Map -2500..2500 to 0..100%
+                const x = Math.max(0, Math.min(100, ((n.x + 2500) / 5000) * 100));
+                const y = Math.max(0, Math.min(100, ((n.y + 2500) / 5000) * 100));
+                return (
+                  <div key={n.id}
+                    className={`absolute rounded-full ${selectedNodeId === n.id ? 'bg-cyan-500 w-1.5 h-1.5 z-10' : 'bg-slate-300 w-1 h-1'}`}
+                    style={{ left: `${x}%`, top: `${y}%` }}
+                  />
+                );
+              })}
+              {/* Viewport Indicator */}
+              <div className="absolute border-2 border-cyan-500/30 bg-cyan-500/5 rounded-sm transition-all duration-75"
+                style={{
+                  left: `${Math.max(0, Math.min(100, ((-viewport.x / viewport.scale + 2500) / 5000) * 100))}%`,
+                  top: `${Math.max(0, Math.min(100, ((-viewport.y / viewport.scale + 2500) / 5000) * 100))}%`,
+                  width: `${Math.min(100, ((window.innerWidth / viewport.scale) / 5000) * 100)}%`,
+                  height: `${Math.min(100, ((window.innerHeight / viewport.scale) / 5000) * 100)}%`
+                }}
+              />
+            </div>
+          </div>
+
+        </div>
+      );
+    };
+
+
+  };
+
+  const container = document.getElementById('root');
+  if (!container) throw new Error("Failed to find the root element");
+  const root = createRoot(container);
+  root.render(<App />);

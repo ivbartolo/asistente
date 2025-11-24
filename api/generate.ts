@@ -19,12 +19,13 @@ export default async function handler(req: Request) {
 
   try {
     console.log('[API] Parseando body de la petición...');
-    const { prompt, image, systemInstruction, isJson } = await req.json();
+    const { prompt, image, audio, mimeType, systemInstruction } = await req.json();
     console.log('[API] Body parseado. Prompt length:', prompt?.length || 0);
+    console.log('[API] Audio presente:', !!audio);
 
-    // Validar que el prompt existe
-    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
-      return new Response(JSON.stringify({ error: 'Prompt is required and must be a non-empty string' }), {
+    // Validar que existe al menos un input (prompt, imagen o audio)
+    if ((!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) && !image && !audio) {
+      return new Response(JSON.stringify({ error: 'Prompt, image, or audio is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -75,8 +76,8 @@ export default async function handler(req: Request) {
     console.log('[API] API Key válida (sanitized). Preparando petición a Gemini...');
 
     // Configuración del modelo alineada con el entorno local (modelo estable)
-    const apiVersion = 'v1';
-    const primaryModel = 'gemini-1.5-flash-latest';
+    const apiVersion = 'v1beta'; // Usar v1beta para soporte multimodal completo
+    const primaryModel = 'gemini-1.5-flash'; // Flash es mejor para audio y rapidez
 
     // Construir el body para la API de Gemini
     const contents = [];
@@ -84,19 +85,36 @@ export default async function handler(req: Request) {
 
     // Si hay systemInstruction, lo agregamos al inicio del prompt para simularlo en v1
     // Esto evita problemas de compatibilidad con v1beta
-    let finalPrompt = prompt;
-    if (systemInstruction) {
-      finalPrompt = `System Instruction: ${systemInstruction}\n\nUser Request: ${prompt}`;
-      console.log('[API] System Instruction merged into prompt for V1 compatibility');
+    let finalPrompt = prompt || "";
+
+    // Si solo hay audio, agregamos un prompt por defecto para guiar al modelo
+    if (audio && (!finalPrompt || finalPrompt.trim() === "")) {
+      finalPrompt = "Transcribe este audio y extrae la idea principal o acción solicitada. Responde solo con el texto transcrito o la respuesta a la pregunta.";
     }
 
-    parts.push({ text: finalPrompt });
+    if (systemInstruction) {
+      finalPrompt = `System Instruction: ${systemInstruction}\n\nUser Request: ${finalPrompt}`;
+      console.log('[API] System Instruction merged into prompt');
+    }
+
+    if (finalPrompt) {
+      parts.push({ text: finalPrompt });
+    }
 
     if (image) {
       parts.push({
         inline_data: {
           mime_type: "image/jpeg",
           data: image
+        }
+      });
+    }
+
+    if (audio) {
+      parts.push({
+        inline_data: {
+          mime_type: mimeType || "audio/webm",
+          data: audio
         }
       });
     }
