@@ -2046,12 +2046,12 @@ const App = () => {
               <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)}>
                 <Plus className="w-4 h-4 text-white" />
               </div>
-              <div className={`${getNodeStyle(node)} shadow-md flex items-center gap-2 min-w-max max-w-[200px] relative overflow-hidden`}>
+              <div className={`${getNodeStyle(node)} shadow-md flex items-center gap-2 max-w-[180px] sm:max-w-[200px] relative overflow-hidden`}>
                 {node.images && node.images.length > 0 && (
                   <img src={node.images[0]} alt="" className="w-8 h-8 rounded-full object-cover border border-white/50" />
                 )}
                 <div className="flex flex-col">
-                  <span className="truncate max-w-[180px]">{node.title}</span>
+                  <span className="truncate max-w-[140px] sm:max-w-[180px]">{node.title}</span>
                   {node.checklist && node.checklist.length > 0 && (
                     <div className="flex items-center gap-1 text-[10px] opacity-70">
                       <CheckSquare className="w-3 h-3" />
