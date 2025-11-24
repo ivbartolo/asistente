@@ -1666,217 +1666,217 @@ const App = () => {
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-          const file = e.target.files[0];
-          const reader = new FileReader();
-          reader.onloadend = async () => {
-            const base64 = reader.result as string;
-            const compressed = await compressImage(base64);
-            processInput({ image: compressed, prompt: "Crea una idea basada en esta imagen" }, true);
-          };
-          reader.readAsDataURL(file);
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        const compressed = await compressImage(base64);
+        processInput({ image: compressed, prompt: "Crea una idea basada en esta imagen" }, true);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // -- GESTURE HELPERS --
+
+  const getPointersDistance = () => {
+    const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
+    if (points.length < 2) return 0;
+    return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  };
+
+  const getPointersCenter = () => {
+    const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
+    let x = 0, y = 0;
+    points.forEach(p => { x += p.x; y += p.y; });
+    return { x: x / points.length, y: y / points.length };
+  };
+
+  // -- POINTER EVENTS (CANVAS) --
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    canvasRef.current?.setPointerCapture(e.pointerId);
+    if (activePointers.current.size === 2) {
+      initialPinchDistance.current = getPointersDistance();
+      initialViewportScale.current = viewport.scale;
+    }
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!activePointers.current.has(e.pointerId)) return;
+
+    const prevPos = activePointers.current.get(e.pointerId)!;
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (draggingNodeId.current) {
+      const dx = e.clientX - prevPos.x;
+      const dy = e.clientY - prevPos.y;
+
+      if (!isDraggingNodeRef.current && dragStartPos.current) {
+        const dist = Math.hypot(e.clientX - dragStartPos.current.x, e.clientY - dragStartPos.current.y);
+        if (dist > 5) {
+          isDraggingNodeRef.current = true;
+          saveSnapshot(); // Save state before dragging actually changes things significantly
         }
-      };
+      }
 
-      // -- GESTURE HELPERS --
+      if (isDraggingNodeRef.current) {
+        setNodes(prev => prev.map(n => {
+          if (n.id === draggingNodeId.current) {
+            return { ...n, x: n.x + dx / viewport.scale, y: n.y + dy / viewport.scale };
+          }
+          return n;
+        }));
+      }
+      return;
+    }
 
-      const getPointersDistance = () => {
-        const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
-        if (points.length < 2) return 0;
-        return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-      };
+    if (tempConnection) {
+      const logicalX = (e.clientX - viewport.x) / viewport.scale;
+      const logicalY = (e.clientY - viewport.y) / viewport.scale;
+      setTempConnection(prev => prev ? { ...prev, endX: logicalX, endY: logicalY } : null);
+      return;
+    }
 
-      const getPointersCenter = () => {
-        const points = Array.from(activePointers.current.values()) as { x: number; y: number }[];
-        let x = 0, y = 0;
-        points.forEach(p => { x += p.x; y += p.y; });
-        return { x: x / points.length, y: y / points.length };
-      };
+    if (activePointers.current.size === 2 && initialPinchDistance.current) {
+      const currentDist = getPointersDistance();
+      const center = getPointersCenter();
+      const scaleFactor = currentDist / initialPinchDistance.current;
+      let newScale = initialViewportScale.current * scaleFactor;
+      newScale = Math.min(Math.max(0.1, newScale), 5);
+      const newX = center.x - (center.x - viewport.x) * (newScale / viewport.scale);
+      const newY = center.y - (center.y - viewport.y) * (newScale / viewport.scale);
+      setViewport({ x: newX, y: newY, scale: newScale });
+      return;
+    }
 
-      // -- POINTER EVENTS (CANVAS) --
+    if (activePointers.current.size === 1) {
+      const dx = e.clientX - prevPos.x;
+      const dy = e.clientY - prevPos.y;
+      setViewport(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+    }
+  };
 
-      const handlePointerDown = (e: React.PointerEvent) => {
-        activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        canvasRef.current?.setPointerCapture(e.pointerId);
-        if (activePointers.current.size === 2) {
-          initialPinchDistance.current = getPointersDistance();
-          initialViewportScale.current = viewport.scale;
-        }
-      };
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (tempConnection) {
+      const targetElement = document.elementFromPoint(e.clientX, e.clientY);
+      const targetNodeElement = targetElement?.closest('[data-node-id]');
 
-      const handlePointerMove = (e: React.PointerEvent) => {
-        if (!activePointers.current.has(e.pointerId)) return;
+      if (targetNodeElement) {
+        const targetId = targetNodeElement.getAttribute('data-node-id');
+        if (targetId && targetId !== tempConnection.sourceId) {
+          // Prevenir conexiones duplicadas y ciclos
+          const existingConnection = connections.find(
+            c => c.sourceId === tempConnection.sourceId && c.targetId === targetId
+          );
+          if (!existingConnection) {
+            // Prevenir ciclos: verificar que el target no sea ancestro del source
+            const wouldCreateCycle = (sourceId: string, targetId: string): boolean => {
+              const visited = new Set<string>();
+              const checkCycle = (currentId: string): boolean => {
+                if (currentId === sourceId) return true;
+                if (visited.has(currentId)) return false;
+                visited.add(currentId);
+                const children = connections
+                  .filter(c => c.sourceId === currentId)
+                  .map(c => c.targetId);
+                return children.some(childId => checkCycle(childId));
+              };
+              return checkCycle(targetId);
+            };
 
-        const prevPos = activePointers.current.get(e.pointerId)!;
-        activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-        if (draggingNodeId.current) {
-          const dx = e.clientX - prevPos.x;
-          const dy = e.clientY - prevPos.y;
-
-          if (!isDraggingNodeRef.current && dragStartPos.current) {
-            const dist = Math.hypot(e.clientX - dragStartPos.current.x, e.clientY - dragStartPos.current.y);
-            if (dist > 5) {
-              isDraggingNodeRef.current = true;
-              saveSnapshot(); // Save state before dragging actually changes things significantly
+            if (!wouldCreateCycle(tempConnection.sourceId, targetId)) {
+              saveSnapshot();
+              setConnections(prev => {
+                const newConns = [...prev, {
+                  id: `c-${Date.now()}`,
+                  sourceId: tempConnection.sourceId,
+                  targetId: targetId
+                }];
+                setTimeout(wakeSimulation, 0);
+                return newConns;
+              });
             }
           }
-
-          if (isDraggingNodeRef.current) {
-            setNodes(prev => prev.map(n => {
-              if (n.id === draggingNodeId.current) {
-                return { ...n, x: n.x + dx / viewport.scale, y: n.y + dy / viewport.scale };
-              }
-              return n;
-            }));
-          }
-          return;
         }
+      }
+      setTempConnection(null);
+    }
 
-        if (tempConnection) {
-          const logicalX = (e.clientX - viewport.x) / viewport.scale;
-          const logicalY = (e.clientY - viewport.y) / viewport.scale;
-          setTempConnection(prev => prev ? { ...prev, endX: logicalX, endY: logicalY } : null);
-          return;
-        }
-
-        if (activePointers.current.size === 2 && initialPinchDistance.current) {
-          const currentDist = getPointersDistance();
-          const center = getPointersCenter();
-          const scaleFactor = currentDist / initialPinchDistance.current;
-          let newScale = initialViewportScale.current * scaleFactor;
-          newScale = Math.min(Math.max(0.1, newScale), 5);
-          const newX = center.x - (center.x - viewport.x) * (newScale / viewport.scale);
-          const newY = center.y - (center.y - viewport.y) * (newScale / viewport.scale);
-          setViewport({ x: newX, y: newY, scale: newScale });
-          return;
-        }
-
-        if (activePointers.current.size === 1) {
-          const dx = e.clientX - prevPos.x;
-          const dy = e.clientY - prevPos.y;
-          setViewport(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
-        }
-      };
-
-      const handlePointerUp = (e: React.PointerEvent) => {
-        if (tempConnection) {
-          const targetElement = document.elementFromPoint(e.clientX, e.clientY);
-          const targetNodeElement = targetElement?.closest('[data-node-id]');
-
-          if (targetNodeElement) {
-            const targetId = targetNodeElement.getAttribute('data-node-id');
-            if (targetId && targetId !== tempConnection.sourceId) {
-              // Prevenir conexiones duplicadas y ciclos
-              const existingConnection = connections.find(
-                c => c.sourceId === tempConnection.sourceId && c.targetId === targetId
-              );
-              if (!existingConnection) {
-                // Prevenir ciclos: verificar que el target no sea ancestro del source
-                const wouldCreateCycle = (sourceId: string, targetId: string): boolean => {
-                  const visited = new Set<string>();
-                  const checkCycle = (currentId: string): boolean => {
-                    if (currentId === sourceId) return true;
-                    if (visited.has(currentId)) return false;
-                    visited.add(currentId);
-                    const children = connections
-                      .filter(c => c.sourceId === currentId)
-                      .map(c => c.targetId);
-                    return children.some(childId => checkCycle(childId));
-                  };
-                  return checkCycle(targetId);
-                };
-
-                if (!wouldCreateCycle(tempConnection.sourceId, targetId)) {
-                  saveSnapshot();
-                  setConnections(prev => {
-                    const newConns = [...prev, {
-                      id: `c-${Date.now()}`,
-                      sourceId: tempConnection.sourceId,
-                      targetId: targetId
-                    }];
-                    setTimeout(wakeSimulation, 0);
-                    return newConns;
-                  });
-                }
-              }
-            }
-          }
-          setTempConnection(null);
-        }
-
-        if (draggingNodeId.current) {
-          if (!isDraggingNodeRef.current) {
-            const nodeId = draggingNodeId.current;
-            const now = Date.now();
-            const lastTap = lastNodeTapTime.current;
-            if (lastTap && lastTap.id === nodeId && (now - lastTap.time) < 300) {
-              setInspectorNodeId(nodeId);
-              lastNodeTapTime.current = null;
-            } else {
-              setSelectedNodeId(nodeId);
-              lastNodeTapTime.current = { id: nodeId, time: now };
-            }
-          } else {
-            wakeSimulation();
-          }
-          draggingNodeId.current = null;
-          isDraggingNodeRef.current = false;
-          dragStartPos.current = null;
+    if (draggingNodeId.current) {
+      if (!isDraggingNodeRef.current) {
+        const nodeId = draggingNodeId.current;
+        const now = Date.now();
+        const lastTap = lastNodeTapTime.current;
+        if (lastTap && lastTap.id === nodeId && (now - lastTap.time) < 300) {
+          setInspectorNodeId(nodeId);
+          lastNodeTapTime.current = null;
         } else {
-          const target = e.target as HTMLElement;
-          if (!target.closest('.node-interactive') && !tempConnection) {
-            setInspectorNodeId(null);
-          }
+          setSelectedNodeId(nodeId);
+          lastNodeTapTime.current = { id: nodeId, time: now };
         }
+      } else {
+        wakeSimulation();
+      }
+      draggingNodeId.current = null;
+      isDraggingNodeRef.current = false;
+      dragStartPos.current = null;
+    } else {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.node-interactive') && !tempConnection) {
+        setInspectorNodeId(null);
+      }
+    }
 
-        activePointers.current.delete(e.pointerId);
-        if (activePointers.current.size < 2) {
-          initialPinchDistance.current = null;
-        }
-        canvasRef.current?.releasePointerCapture(e.pointerId);
-      };
+    activePointers.current.delete(e.pointerId);
+    if (activePointers.current.size < 2) {
+      initialPinchDistance.current = null;
+    }
+    canvasRef.current?.releasePointerCapture(e.pointerId);
+  };
 
-      // -- NODE EVENTS --
+  // -- NODE EVENTS --
 
-      const handleNodePointerDown = (e: React.PointerEvent, nodeId: string) => {
-        e.preventDefault();
-        draggingNodeId.current = nodeId;
-        isDraggingNodeRef.current = false;
-        dragStartPos.current = { x: e.clientX, y: e.clientY };
-      };
+  const handleNodePointerDown = (e: React.PointerEvent, nodeId: string) => {
+    e.preventDefault();
+    draggingNodeId.current = nodeId;
+    isDraggingNodeRef.current = false;
+    dragStartPos.current = { x: e.clientX, y: e.clientY };
+  };
 
-      const startConnection = (e: React.PointerEvent, nodeId: string) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const node = nodes.find(n => n.id === nodeId);
-        if (!node) return;
-        setTempConnection({ sourceId: nodeId, endX: node.x, endY: node.y });
-      };
+  const startConnection = (e: React.PointerEvent, nodeId: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    setTempConnection({ sourceId: nodeId, endX: node.x, endY: node.y });
+  };
 
-      // -- RENDER LOGIC (FILTERING) --
+  // -- RENDER LOGIC (FILTERING) --
 
 
 
-      // -- CHAT HANDLER --
+  // -- CHAT HANDLER --
 
-      const handleSendChatMessage = async (userText: string) => {
-        setChatMessages(prev => [...prev, { role: 'user', text: userText }]);
-        setIsChatLoading(true);
+  const handleSendChatMessage = async (userText: string) => {
+    setChatMessages(prev => [...prev, { role: 'user', text: userText }]);
+    setIsChatLoading(true);
 
-        try {
-          // Prepare Context (simplified structure to save tokens)
-          const contextData = visibleNodes.map(n => ({
-            title: n.title,
-            summary: n.summary,
-            category: n.category,
-            cost: n.cost,
-            checklist: n.checklist,
-            status: n.status,
-            isRoot: !connections.some(c => c.targetId === n.id)
-          }));
+    try {
+      // Prepare Context (simplified structure to save tokens)
+      const contextData = visibleNodes.map(n => ({
+        title: n.title,
+        summary: n.summary,
+        category: n.category,
+        cost: n.cost,
+        checklist: n.checklist,
+        status: n.status,
+        isRoot: !connections.some(c => c.targetId === n.id)
+      }));
 
-          const prompt = `
+      const prompt = `
           Eres un asistente experto analizando el siguiente mapa mental (JSON):
           ${JSON.stringify(contextData)}
 
@@ -1885,329 +1885,360 @@ const App = () => {
           Responde de forma útil, concisa y directa basándote SOLAMENTE en los datos proporcionados.
           `;
 
-          const responseText = await callAI({
-            prompt: prompt
-          });
+      const responseText = await callAI({
+        prompt: prompt
+      });
 
-          setChatMessages(prev => [...prev, { role: 'model', text: responseText }]);
-        } catch (e) {
-          setChatMessages(prev => [...prev, { role: 'model', text: 'Lo siento, hubo un error al conectar con la IA.' }]);
-        } finally {
-          setIsChatLoading(false);
-        }
-      };
+      setChatMessages(prev => [...prev, { role: 'model', text: responseText }]);
+    } catch (e) {
+      setChatMessages(prev => [...prev, { role: 'model', text: 'Lo siento, hubo un error al conectar con la IA.' }]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
 
-      return (
-        <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none">
+  return (
+    <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none">
 
-          {/* SIDEBAR MENU */}
-          <div
-            className={`fixed inset-y-0 left-0 w-72 bg-white shadow-2xl transform transition-transform duration-300 z-[100] flex flex-col ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      {/* SIDEBAR MENU */}
+      <div
+        className={`fixed inset-y-0 left-0 w-72 bg-white shadow-2xl transform transition-transform duration-300 z-[100] flex flex-col ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      >
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+          <h2 className="font-bold text-lg text-slate-800">Mis Proyectos</h2>
+          <button onClick={() => setIsMenuOpen(false)} className="p-2 hover:bg-slate-100 rounded-full">
+            <X className="w-5 h-5 text-slate-500" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2">
+          <button
+            onClick={createManualProject}
+            className="w-full p-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 text-slate-500 hover:bg-slate-50 flex items-center justify-center gap-2 font-semibold text-sm transition-colors"
           >
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="font-bold text-lg text-slate-800">Mis Proyectos</h2>
-              <button onClick={() => setIsMenuOpen(false)} className="p-2 hover:bg-slate-100 rounded-full">
-                <X className="w-5 h-5 text-slate-500" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2">
-              <button
-                onClick={createManualProject}
-                className="w-full p-3 mb-2 rounded-lg border-2 border-dashed border-slate-300 text-slate-500 hover:bg-slate-50 flex items-center justify-center gap-2 font-semibold text-sm transition-colors"
-              >
-                <Plus className="w-4 h-4" /> Nuevo Proyecto
-              </button>
-              {rootNodes.length === 0 && <div className="p-4 text-sm text-slate-400 text-center">No hay proyectos raíz.</div>}
-              {rootNodes.map(node => (
-                <button
-                  key={node.id}
-                  onClick={() => { focusOnNode(node.id); setIsMenuOpen(false); }}
-                  className={`w-full text-left p-3 rounded-lg mb-1 flex items-center gap-3 transition-colors ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'bg-cyan-50 border border-cyan-200' : 'hover:bg-slate-50 border border-transparent'}`}
-                >
-                  <Disc className={`w-4 h-4 ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-600' : 'text-slate-400'}`} />
-                  <div className="flex flex-col overflow-hidden">
-                    <span className={`font-semibold text-sm truncate ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-800' : 'text-slate-700'}`}>{node.title}</span>
-                    <span className="text-[10px] text-slate-400 uppercase truncate">{node.category}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-
-            {/* EXPORT SECTION */}
-            <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-2">
-              <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Exportar Vista</h3>
-              <button onClick={() => { exportAsImage(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
-                <Download className="w-4 h-4 text-cyan-600" />
-                Imagen (PNG)
-              </button>
-              <button onClick={() => { exportAsMarkdown(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
-                <FileText className="w-4 h-4 text-violet-500" />
-                Markdown (Texto)
-              </button>
-            </div>
-          </div>
-
-          {/* HEADER UI */}
-          <div className="absolute top-4 left-4 right-4 z-50 pointer-events-none flex items-start justify-between gap-4">
-            <div className="flex gap-2 pointer-events-auto">
-              <button onClick={() => setIsMenuOpen(true)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50">
-                <Menu className="w-5 h-5 text-slate-700" />
-              </button>
-              {selectedNodeId && (
-                <button onClick={() => setSelectedNodeId(null)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50 flex items-center gap-2 px-4">
-                  <ArrowLeft className="w-5 h-5 text-slate-700" />
-                  <span className="text-xs font-bold text-slate-600 hidden sm:inline">Todos</span>
-                </button>
-              )}
-              <div className="flex bg-white rounded-full shadow-md border border-slate-200 ml-2">
-                <button onClick={undo} disabled={pastHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-l-full disabled:opacity-30">
-                  <Undo className="w-5 h-5 text-slate-600" />
-                </button>
-                <div className="w-px bg-slate-200 my-2"></div>
-                <button onClick={redo} disabled={futureHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-r-full disabled:opacity-30">
-                  <Redo className="w-5 h-5 text-slate-600" />
-                </button>
+            <Plus className="w-4 h-4" /> Nuevo Proyecto
+          </button>
+          {rootNodes.length === 0 && <div className="p-4 text-sm text-slate-400 text-center">No hay proyectos raíz.</div>}
+          {rootNodes.map(node => (
+            <button
+              key={node.id}
+              onClick={() => { focusOnNode(node.id); setIsMenuOpen(false); }}
+              className={`w-full text-left p-3 rounded-lg mb-1 flex items-center gap-3 transition-colors ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'bg-cyan-50 border border-cyan-200' : 'hover:bg-slate-50 border border-transparent'}`}
+            >
+              <Disc className={`w-4 h-4 ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-600' : 'text-slate-400'}`} />
+              <div className="flex flex-col overflow-hidden">
+                <span className={`font-semibold text-sm truncate ${getRootAncestor(selectedNodeId || '', connections) === node.id ? 'text-cyan-800' : 'text-slate-700'}`}>{node.title}</span>
+                <span className="text-[10px] text-slate-400 uppercase truncate">{node.category}</span>
               </div>
-            </div>
+            </button>
+          ))}
+        </div>
 
-            <div className="pointer-events-auto flex-1 max-w-md">
-              <div className="bg-white/90 backdrop-blur-md border border-slate-200 rounded-full p-3 shadow-lg flex items-center gap-2 w-full">
-                <Search className="w-5 h-5 text-slate-400" />
-                <input
-                  className="bg-transparent border-none outline-none text-slate-700 w-full placeholder-slate-400 text-sm"
-                  placeholder="Buscar..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-              </div>
-            </div>
+        {/* EXPORT SECTION */}
+        <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-2">
+          <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Exportar Vista</h3>
+          <button onClick={() => { exportAsImage(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
+            <Download className="w-4 h-4 text-cyan-600" />
+            Imagen (PNG)
+          </button>
+          <button onClick={() => { exportAsMarkdown(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
+            <FileText className="w-4 h-4 text-violet-500" />
+            Markdown (Texto)
+          </button>
+        </div>
+      </div>
+
+      {/* HEADER UI */}
+      <div className="absolute top-4 left-4 right-4 z-50 pointer-events-none flex items-start justify-between gap-4">
+        <div className="flex gap-2 pointer-events-auto">
+          <button onClick={() => setIsMenuOpen(true)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50">
+            <Menu className="w-5 h-5 text-slate-700" />
+          </button>
+          {selectedNodeId && (
+            <button onClick={() => setSelectedNodeId(null)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50 flex items-center gap-2 px-4">
+              <ArrowLeft className="w-5 h-5 text-slate-700" />
+              <span className="text-xs font-bold text-slate-600 hidden sm:inline">Todos</span>
+            </button>
+          )}
+          <div className="flex bg-white rounded-full shadow-md border border-slate-200 ml-2">
+            <button onClick={undo} disabled={pastHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-l-full disabled:opacity-30">
+              <Undo className="w-5 h-5 text-slate-600" />
+            </button>
+            <div className="w-px bg-slate-200 my-2"></div>
+            <button onClick={redo} disabled={futureHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-r-full disabled:opacity-30">
+              <Redo className="w-5 h-5 text-slate-600" />
+            </button>
           </div>
+        </div>
 
-          {/* CANVAS LAYER */}
-          <div
-            ref={canvasRef}
-            className="absolute inset-0 touch-none bg-slate-50"
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerUp}
-          >
-            <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
-            <div style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`, transformOrigin: '0 0', width: '100%', height: '100%', willChange: 'transform' }} className="relative w-full h-full">
+        <div className="pointer-events-auto flex-1 max-w-md">
+          <div className="bg-white/90 backdrop-blur-md border border-slate-200 rounded-full p-3 shadow-lg flex items-center gap-2 w-full">
+            <Search className="w-5 h-5 text-slate-400" />
+            <input
+              className="bg-transparent border-none outline-none text-slate-700 w-full placeholder-slate-400 text-sm"
+              placeholder="Buscar..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </div>
+      </div>
 
-              <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none">
-                {visibleConnections.map(conn => {
-                  const source = nodes.find(n => n.id === conn.sourceId);
-                  const target = nodes.find(n => n.id === conn.targetId);
-                  if (!source || !target) return null;
-                  const isRootSource = !connections.some(c => c.targetId === source.id);
-                  return <path key={conn.id} d={drawCurve(source.x, source.y, target.x, target.y)} stroke={isRootSource ? "#22d3ee" : "#a3e635"} strokeWidth={isRootSource ? "3" : "1.5"} fill="none" strokeLinecap="round" />;
-                })}
-                {tempConnection && <path d={drawCurve(nodes.find(n => n.id === tempConnection.sourceId)!.x, nodes.find(n => n.id === tempConnection.sourceId)!.y, tempConnection.endX, tempConnection.endY)} stroke="#94a3b8" strokeWidth="2" strokeDasharray="5,5" fill="none" />}
-              </svg>
+      {/* CANVAS LAYER */}
+      <div
+        ref={canvasRef}
+        className="absolute inset-0 touch-none bg-slate-50"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      >
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
+        <div style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`, transformOrigin: '0 0', width: '100%', height: '100%', willChange: 'transform' }} className="relative w-full h-full">
 
-              {visibleNodes.map((node: any) => (
-                <div
-                  key={node.id}
-                  data-node-id={node.id}
-                  className={`node-interactive absolute group flex justify-center items-center touch-none ${node.isDimmed ? 'opacity-20 blur-sm grayscale' : 'opacity-100'} ${selectedNodeId === node.id ? 'z-50' : 'z-10'} transition-transform duration-75`}
-                  style={{ transform: `translate(${node.x}px, ${node.y}px) translate(-50%, -50%)` }}
-                  onPointerDown={(e) => handleNodePointerDown(e, node.id)}
-                >
-                  <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)}>
-                    <Plus className="w-4 h-4 text-white" />
-                  </div>
-                  <div className={`${getNodeStyle(node)} shadow-md flex items-center gap-2 min-w-max max-w-[200px] relative overflow-hidden`}>
-                    {node.images && node.images.length > 0 && (
-                      <img src={node.images[0]} alt="" className="w-8 h-8 rounded-full object-cover border border-white/50" />
-                    )}
-                    <div className="flex flex-col">
-                      <span className="truncate max-w-[180px]">{node.title}</span>
-                      {node.checklist && node.checklist.length > 0 && (
-                        <div className="flex items-center gap-1 text-[10px] opacity-70">
-                          <CheckSquare className="w-3 h-3" />
-                          <span>{node.checklist.filter((i: any) => i.done).length}/{node.checklist.length}</span>
-                        </div>
-                      )}
+          <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none">
+            {visibleConnections.map(conn => {
+              const source = nodes.find(n => n.id === conn.sourceId);
+              const target = nodes.find(n => n.id === conn.targetId);
+              if (!source || !target) return null;
+              const isRootSource = !connections.some(c => c.targetId === source.id);
+              return <path key={conn.id} d={drawCurve(source.x, source.y, target.x, target.y)} stroke={isRootSource ? "#22d3ee" : "#a3e635"} strokeWidth={isRootSource ? "3" : "1.5"} fill="none" strokeLinecap="round" />;
+            })}
+            {tempConnection && <path d={drawCurve(nodes.find(n => n.id === tempConnection.sourceId)!.x, nodes.find(n => n.id === tempConnection.sourceId)!.y, tempConnection.endX, tempConnection.endY)} stroke="#94a3b8" strokeWidth="2" strokeDasharray="5,5" fill="none" />}
+          </svg>
+
+          {visibleNodes.map((node: any) => (
+            <div
+              key={node.id}
+              data-node-id={node.id}
+              className={`node-interactive absolute group flex justify-center items-center touch-none ${node.isDimmed ? 'opacity-20 blur-sm grayscale' : 'opacity-100'} ${selectedNodeId === node.id ? 'z-50' : 'z-10'} transition-transform duration-75`}
+              style={{ transform: `translate(${node.x}px, ${node.y}px) translate(-50%, -50%)` }}
+              onPointerDown={(e) => handleNodePointerDown(e, node.id)}
+            >
+              <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)}>
+                <Plus className="w-4 h-4 text-white" />
+              </div>
+              <div className={`${getNodeStyle(node)} shadow-md flex items-center gap-2 min-w-max max-w-[200px] relative overflow-hidden`}>
+                {node.images && node.images.length > 0 && (
+                  <img src={node.images[0]} alt="" className="w-8 h-8 rounded-full object-cover border border-white/50" />
+                )}
+                <div className="flex flex-col">
+                  <span className="truncate max-w-[180px]">{node.title}</span>
+                  {node.checklist && node.checklist.length > 0 && (
+                    <div className="flex items-center gap-1 text-[10px] opacity-70">
+                      <CheckSquare className="w-3 h-3" />
+                      <span>{node.checklist.filter((i: any) => i.done).length}/{node.checklist.length}</span>
                     </div>
-                    {node.status === 'scheduled' && <div className="w-2 h-2 rounded-full bg-blue-600" />}
-                    {selectedNodeId === node.id && <div className="absolute inset-0 -m-1 rounded-full border-2 border-blue-400 animate-pulse pointer-events-none" />}
-                  </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          </div>
-
-          {/* INPUT BAR (MIC & CAMERA) */}
-          <div
-            className={`fixed left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
-              }`}
-            style={{
-              bottom: inspectorNodeId
-                ? 'calc(85vh + 1rem)'
-                : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
-              transform: 'translateZ(0)',
-            }}
-          >
-
-            {/* Camera Button */}
-            <div className="pointer-events-auto relative">
-              <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="absolute inset-0 opacity-0 z-10 cursor-pointer" />
-              <button className="w-12 h-12 bg-white rounded-full shadow-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 active:scale-95 transition-transform text-slate-600">
-                <Camera className="w-6 h-6" />
-              </button>
-            </div>
-
-            {/* Mic Button */}
-            <div className="flex flex-col items-center gap-2">
-              <div className="bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] truncate">
-                {selectedNodeId
-                  ? `Añadiendo a: ${nodes.find(n => n.id === selectedNodeId)?.title}`
-                  : 'Creando Nuevo Proyecto'}
+                {node.status === 'scheduled' && <div className="w-2 h-2 rounded-full bg-blue-600" />}
+                {selectedNodeId === node.id && <div className="absolute inset-0 -m-1 rounded-full border-2 border-blue-400 animate-pulse pointer-events-none" />}
               </div>
-              <button
-                onClick={handleMicClick}
-                disabled={isProcessing}
-                className={`
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* INPUT BAR (MIC & CAMERA) */}
+      <div
+        className={`fixed left-1/2 -translate-x-1/2 pointer-events-none flex items-end gap-4 transition-all duration-300 ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
+          }`}
+        style={{
+          bottom: inspectorNodeId
+            ? 'calc(85vh + 1rem)'
+            : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
+          transform: 'translateZ(0)',
+        }}
+      >
+
+        {/* Camera Button */}
+        <div className="pointer-events-auto relative">
+          <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="absolute inset-0 opacity-0 z-10 cursor-pointer" />
+          <button className="w-12 h-12 bg-white rounded-full shadow-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 active:scale-95 transition-transform text-slate-600">
+            <Camera className="w-6 h-6" />
+          </button>
+        </div>
+
+        {/* Mic Button */}
+        <div className="flex flex-col items-center gap-2">
+          <div className="bg-black/50 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] truncate">
+            {selectedNodeId
+              ? `Añadiendo a: ${nodes.find(n => n.id === selectedNodeId)?.title}`
+              : 'Creando Nuevo Proyecto'}
+          </div>
+          <button
+            onClick={handleMicClick}
+            disabled={isProcessing}
+            className={`
                 relative pointer-events-auto flex items-center justify-center w-16 h-16 rounded-full shadow-2xl
                 transition-all duration-300 transform hover:scale-105 active:scale-95 overflow-hidden
                 ${isRecording ? 'bg-red-500 ring-4 ring-red-200' : 'bg-cyan-600'}
                 ${isProcessing ? 'opacity-70' : ''}
                 border-2 border-white
             `}
-              >
-                {isProcessing ? (
-                  <BrainCircuit className="w-8 h-8 animate-spin text-white" />
-                ) : isRecording ? (
-                  <div className="flex items-center justify-center gap-[2px] h-8">
-                    {[...Array(5)].map((_, i) => {
-                      const val = audioData[i * 4] || 0;
-                      const height = Math.max(20, (val / 255) * 100);
-                      return <div key={i} className="w-1 bg-white rounded-full transition-all duration-75" style={{ height: `${height}%` }} />
-                    })}
-                  </div>
-                ) : (
-                  <Mic className="w-8 h-8 text-white" />
-                )}
+          >
+            {isProcessing ? (
+              <BrainCircuit className="w-8 h-8 animate-spin text-white" />
+            ) : isRecording ? (
+              <div className="flex items-center justify-center gap-[2px] h-8">
+                {[...Array(5)].map((_, i) => {
+                  const val = audioData[i * 4] || 0;
+                  const height = Math.max(20, (val / 255) * 100);
+                  return <div key={i} className="w-1 bg-white rounded-full transition-all duration-75" style={{ height: `${height}%` }} />
+                })}
+              </div>
+            ) : (
+              <Mic className="w-8 h-8 text-white" />
+            )}
+          </button>
+          {/* Recognition Status Indicator */}
+          {recognitionStatus && (
+            <div className="bg-orange-500/90 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] text-center">
+              {recognitionStatus}
+            </div>
+          )}
+        </div>
+
+        {/* Text Input Field for Manual Entry / Keyboard Dictation */}
+        <div className="pointer-events-auto flex gap-2 items-center px-4 max-w-md w-full">
+          <input
+            type="text"
+            placeholder="Escribe tu idea o usa el micrófono del teclado 🎤"
+            className="flex-1 px-4 py-3 rounded-full bg-white border-2 border-slate-200 focus:border-cyan-500 outline-none shadow-lg text-sm"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                const text = e.currentTarget.value.trim();
+                e.currentTarget.value = '';
+                processInput(text);
+              }
+            }}
+            disabled={isProcessing}
+          />
+          <button
+            onClick={(e) => {
+              const input = (e.currentTarget.previousElementSibling as HTMLInputElement);
+              if (input?.value.trim()) {
+                const text = input.value.trim();
+                input.value = '';
+                processInput(text);
+              }
+            }}
+            disabled={isProcessing}
+            className="w-12 h-12 bg-cyan-600 rounded-full shadow-lg flex items-center justify-center hover:bg-cyan-700 active:scale-95 transition-all disabled:opacity-50"
+          >
+            <Send className="w-5 h-5 text-white" />
+          </button>
+        </div>
+
+
+        {/* Chat Button Placeholder to balance layout */}
+        <div className="w-12 h-12 pointer-events-none opacity-0" />
+      </div>
+
+      {/* FLOATING CHAT BUTTON */}
+      <button
+        onClick={() => setIsChatOpen(true)}
+        className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
+          }`}
+        style={{
+          bottom: inspectorNodeId
+            ? 'calc(85vh + 1rem)'
+            : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
+          transform: 'translateZ(0)',
+        }}
+      >
+        <MessageCircle className="w-7 h-7" />
+      </button>
+
+      {/* CHAT OVERLAY */}
+      {isChatOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/20 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-white w-full sm:max-w-md h-[80vh] sm:h-[600px] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-cyan-100 rounded-full flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-cyan-600" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800">Asistente IA</h3>
+                  <p className="text-[10px] text-slate-500">Pregunta sobre tu proyecto actual</p>
+                </div>
+              </div>
+              <button onClick={() => setIsChatOpen(false)} className="p-2 hover:bg-slate-200 rounded-full">
+                <X className="w-5 h-5 text-slate-500" />
               </button>
-              {/* Recognition Status Indicator */}
-              {recognitionStatus && (
-                <div className="bg-orange-500/90 backdrop-blur-sm text-white text-[10px] px-3 py-1 rounded-full pointer-events-none animate-in fade-in slide-in-from-bottom-2 max-w-[200px] text-center">
-                  {recognitionStatus}
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${msg.role === 'user' ? 'bg-cyan-600 text-white rounded-tr-sm' : 'bg-white border border-slate-100 shadow-sm text-slate-700 rounded-tl-sm'}`}>
+                    {msg.text}
+                  </div>
+                </div>
+              ))}
+              {isChatLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-white border border-slate-100 p-3 rounded-2xl rounded-tl-sm shadow-sm flex gap-1">
+                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" />
+                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-100" />
+                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-200" />
+                  </div>
                 </div>
               )}
             </div>
 
-
-            {/* Chat Button Placeholder to balance layout */}
-            <div className="w-12 h-12 pointer-events-none opacity-0" />
-          </div>
-
-          {/* FLOATING CHAT BUTTON */}
-          <button
-            onClick={() => setIsChatOpen(true)}
-            className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
-              }`}
-            style={{
-              bottom: inspectorNodeId
-                ? 'calc(85vh + 1rem)'
-                : 'calc(2.5rem + env(safe-area-inset-bottom, 32px))',
-              transform: 'translateZ(0)',
-            }}
-          >
-            <MessageCircle className="w-7 h-7" />
-          </button>
-
-          {/* CHAT OVERLAY */}
-          {isChatOpen && (
-            <div className="fixed inset-0 z-[60] bg-black/20 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4">
-              <div className="bg-white w-full sm:max-w-md h-[80vh] sm:h-[600px] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
-                {/* Header */}
-                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-cyan-100 rounded-full flex items-center justify-center">
-                      <Sparkles className="w-4 h-4 text-cyan-600" />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-slate-800">Asistente IA</h3>
-                      <p className="text-[10px] text-slate-500">Pregunta sobre tu proyecto actual</p>
-                    </div>
-                  </div>
-                  <button onClick={() => setIsChatOpen(false)} className="p-2 hover:bg-slate-200 rounded-full">
-                    <X className="w-5 h-5 text-slate-500" />
-                  </button>
-                </div>
-
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
-                  {chatMessages.map((msg, i) => (
-                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${msg.role === 'user' ? 'bg-cyan-600 text-white rounded-tr-sm' : 'bg-white border border-slate-100 shadow-sm text-slate-700 rounded-tl-sm'}`}>
-                        {msg.text}
-                      </div>
-                    </div>
-                  ))}
-                  {isChatLoading && (
-                    <div className="flex justify-start">
-                      <div className="bg-white border border-slate-100 p-3 rounded-2xl rounded-tl-sm shadow-sm flex gap-1">
-                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" />
-                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-100" />
-                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-200" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Input */}
-                <div className="p-4 bg-white border-t border-slate-100">
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const input = (e.target as HTMLFormElement).elements.namedItem('msg') as HTMLInputElement;
-                      if (input.value.trim()) {
-                        handleSendChatMessage(input.value);
-                        input.value = '';
-                      }
-                    }}
-                    className="flex gap-2"
-                  >
-                    <input
-                      name="msg"
-                      className="flex-1 bg-slate-100 rounded-full px-4 text-sm outline-none focus:ring-2 ring-cyan-200"
-                      placeholder="Escribe tu pregunta..."
-                      autoComplete="off"
-                    />
-                    <button type="submit" disabled={isChatLoading} className="p-2 bg-cyan-600 text-white rounded-full disabled:opacity-50">
-                      <Send className="w-5 h-5" />
-                    </button>
-                  </form>
-                </div>
-              </div>
+            {/* Input */}
+            <div className="p-4 bg-white border-t border-slate-100">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const input = (e.target as HTMLFormElement).elements.namedItem('msg') as HTMLInputElement;
+                  if (input.value.trim()) {
+                    handleSendChatMessage(input.value);
+                    input.value = '';
+                  }
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  name="msg"
+                  className="flex-1 bg-slate-100 rounded-full px-4 text-sm outline-none focus:ring-2 ring-cyan-200"
+                  placeholder="Escribe tu pregunta..."
+                  autoComplete="off"
+                />
+                <button type="submit" disabled={isChatLoading} className="p-2 bg-cyan-600 text-white rounded-full disabled:opacity-50">
+                  <Send className="w-5 h-5" />
+                </button>
+              </form>
             </div>
-          )}
+          </div>
+        </div>
+      )}
 
-          {/* UI: INSPECTOR */}
-          {inspectorNodeId && (
-            <Inspector
-              node={nodes.find(n => n.id === inspectorNodeId)!}
-              onClose={() => setInspectorNodeId(null)}
-              onUpdate={(updatedNode) => {
-                saveSnapshot();
-                setNodes(prev => prev.map(n => n.id === updatedNode.id ? updatedNode : n));
-              }}
-              onDelete={() => {
-                saveSnapshot();
-                setNodes(prev => prev.filter(n => n.id !== inspectorNodeId));
-                setConnections(prev => prev.filter(c => c.sourceId !== inspectorNodeId && c.targetId !== inspectorNodeId));
-                setInspectorNodeId(null);
-                setSelectedNodeId(null);
-              }}
-              onGenerateBrainstorm={async (node) => {
-                setIsProcessing(true);
-                try {
-                  const prompt = `Genera 3 ideas breves y creativas relacionadas con: "${node.title}".`;
+      {/* UI: INSPECTOR */}
+      {inspectorNodeId && (
+        <Inspector
+          node={nodes.find(n => n.id === inspectorNodeId)!}
+          onClose={() => setInspectorNodeId(null)}
+          onUpdate={(updatedNode) => {
+            saveSnapshot();
+            setNodes(prev => prev.map(n => n.id === updatedNode.id ? updatedNode : n));
+          }}
+          onDelete={() => {
+            saveSnapshot();
+            setNodes(prev => prev.filter(n => n.id !== inspectorNodeId));
+            setConnections(prev => prev.filter(c => c.sourceId !== inspectorNodeId && c.targetId !== inspectorNodeId));
+            setInspectorNodeId(null);
+            setSelectedNodeId(null);
+          }}
+          onGenerateBrainstorm={async (node) => {
+            setIsProcessing(true);
+            try {
+              const prompt = `Genera 3 ideas breves y creativas relacionadas con: "${node.title}".`;
 
-                  const systemInstruction = `Eres un generador de ideas creativas.
+              const systemInstruction = `Eres un generador de ideas creativas.
 Debes devolver EXACTAMENTE un array JSON de 3 strings.
 Cada string debe ser una idea breve (máximo 5 palabras).
 
@@ -2220,196 +2251,196 @@ Ejemplo correcto:
 NO devuelvas objetos, solo strings.
 NO añadas texto explicativo antes o después del JSON.`;
 
-                  const responseText = await callAI({
-                    prompt: prompt,
-                    systemInstruction: systemInstruction,
-                    isJson: true
-                  });
+              const responseText = await callAI({
+                prompt: prompt,
+                systemInstruction: systemInstruction,
+                isJson: true
+              });
 
-                  let ideas;
-                  try {
-                    let parsed = JSON.parse(responseText);
+              let ideas;
+              try {
+                let parsed = JSON.parse(responseText);
 
-                    // Debug logging
-                    console.log("[Brainstorm] Respuesta parseada:", parsed);
-                    console.log("[Brainstorm] Tipo:", typeof parsed);
-                    console.log("[Brainstorm] Es array:", Array.isArray(parsed));
+                // Debug logging
+                console.log("[Brainstorm] Respuesta parseada:", parsed);
+                console.log("[Brainstorm] Tipo:", typeof parsed);
+                console.log("[Brainstorm] Es array:", Array.isArray(parsed));
 
-                    // Validar estructura
-                    // Caso 1: Si es un objeto con propiedad 'ideas' o similar
-                    if (typeof parsed === 'object' && !Array.isArray(parsed)) {
-                      const possibleArrays = ['ideas', 'items', 'suggestions', 'list', 'data'];
-                      let found = false;
+                // Validar estructura
+                // Caso 1: Si es un objeto con propiedad 'ideas' o similar
+                if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  const possibleArrays = ['ideas', 'items', 'suggestions', 'list', 'data'];
+                  let found = false;
 
-                      for (const key of possibleArrays) {
-                        if (Array.isArray(parsed[key])) {
-                          console.warn(`[Brainstorm] Extrayendo array de propiedad '${key}'`);
-                          parsed = parsed[key];
-                          found = true;
-                          break;
-                        }
-                      }
-
-                      if (!found) {
-                        throw new Error(`Respuesta es un objeto, no un array. Keys: ${Object.keys(parsed).join(', ')}`);
-                      }
-                    }
-
-                    // Caso 2: Si no es array, error
-                    if (!Array.isArray(parsed)) {
-                      throw new Error(`Respuesta no es un array. Tipo: ${typeof parsed}`);
-                    }
-
-                    // Caso 3: Si está vacío
-                    if (parsed.length === 0) {
-                      throw new Error("El array de ideas está vacío");
-                    }
-
-                    // Normalizar: Convertir todo a strings
-                    ideas = parsed.map((item, i) => {
-                      // Si es string, OK
-                      if (typeof item === 'string') {
-                        return item.trim();
-                      }
-
-                      // Si es objeto, intentar extraer texto
-                      if (typeof item === 'object' && item !== null) {
-                        const text = item.title || item.idea || item.text || item.name || item.description;
-                        if (text && typeof text === 'string') {
-                          console.warn(`[Brainstorm] Item ${i} es objeto, extrayendo texto de propiedad`);
-                          return text.trim();
-                        }
-
-                        console.warn(`[Brainstorm] Item ${i} es objeto sin propiedad de texto, usando JSON.stringify`);
-                        return JSON.stringify(item);
-                      }
-
-                      // Convertir cualquier otra cosa a string
-                      return String(item);
-                    }).filter(text => text.length > 0);
-
-                    // Validar que tengamos al menos 1 idea
-                    if (ideas.length === 0) {
-                      throw new Error("No se pudieron extraer ideas válidas del array");
-                    }
-
-                    console.log(`[Brainstorm] ${ideas.length} ideas válidas extraídas:`, ideas);
-
-                  } catch (parseError: any) {
-                    console.error("[Brainstorm] Error completo:", parseError);
-                    console.error("[Brainstorm] Respuesta recibida:", responseText);
-
-                    // Intentar extraer JSON de markdown
-                    const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/);
-                    if (jsonMatch) {
-                      console.warn("[Brainstorm] Detectado JSON en markdown, reintentando...");
-                      try {
-                        const extracted = JSON.parse(jsonMatch[1]);
-                        if (Array.isArray(extracted)) {
-                          ideas = extracted.map(String);
-                          console.log("[Brainstorm] ✅ Extraído de markdown exitosamente");
-                        }
-                      } catch {
-                        throw new Error(`Error parseando JSON dentro de markdown: ${parseError.message}`);
-                      }
-                    } else {
-                      throw new Error(`Error parseando respuesta como JSON: ${parseError.message}. Respuesta: ${responseText.substring(0, 100)}...`);
+                  for (const key of possibleArrays) {
+                    if (Array.isArray(parsed[key])) {
+                      console.warn(`[Brainstorm] Extrayendo array de propiedad '${key}'`);
+                      parsed = parsed[key];
+                      found = true;
+                      break;
                     }
                   }
 
-                  saveSnapshot();
-                  const newNodes: IdeaNode[] = [];
-                  const newConns: Connection[] = [];
-
-                  ideas.forEach((ideaText: string, i: number) => {
-                    const angle = (Math.PI * 2 / 3) * i;
-                    const dist = 180;
-                    const newNode: IdeaNode = {
-                      id: Date.now() + i + '',
-                      x: node.x + Math.cos(angle) * dist,
-                      y: node.y + Math.sin(angle) * dist,
-                      title: ideaText,
-                      summary: "Generado por IA",
-                      originalContext: "",
-                      category: node.category,
-                      cost: 0,
-                      links: [],
-                      checklist: [],
-                      images: [],
-                      attachments: [],
-                      type: 'text',
-                      status: 'draft',
-                      createdAt: Date.now()
-                    };
-                    newNodes.push(newNode);
-                    newConns.push({ id: `c-${Date.now()}-${i}`, sourceId: node.id, targetId: newNode.id });
-                  });
-
-                  setNodes(prev => [...prev, ...newNodes]);
-                  setConnections(prev => {
-                    // Filtrar conexiones duplicadas
-                    const existingIds = new Set(prev.map(c => `${c.sourceId}-${c.targetId}`));
-                    const uniqueConns = newConns.filter(c => !existingIds.has(`${c.sourceId}-${c.targetId}`));
-                    return [...prev, ...uniqueConns];
-                  });
-                  wakeSimulation();
-                } catch (e: any) {
-                  console.error("[Brainstorm] Error completo:", e);
-
-                  // Construir mensaje de error útil
-                  let errorMessage = "Error generando ideas";
-
-                  if (e.message) {
-                    if (e.message.includes('parsear') || e.message.includes('JSON')) {
-                      errorMessage = "La IA devolvió un formato inválido. Intenta de nuevo.";
-                    } else if (e.message.includes('array')) {
-                      errorMessage = "La IA no devolvió una lista de ideas. Intenta de nuevo.";
-                    } else if (e.message.includes('API') || e.message.includes('fetch')) {
-                      errorMessage = "Error de conexión con el servidor. Verifica tu internet.";
-                    } else {
-                      errorMessage = `Error: ${e.message}`;
-                    }
+                  if (!found) {
+                    throw new Error(`Respuesta es un objeto, no un array. Keys: ${Object.keys(parsed).join(', ')}`);
                   }
-
-                  console.error("[Brainstorm] Mensaje para usuario:", errorMessage);
-                  alert(errorMessage);
-                } finally {
-                  setIsProcessing(false);
                 }
-              }}
-            />
-          )}
 
-          {/* MINIMAP - Hidden on mobile by default, visible on larger screens */}
-          <div className="absolute bottom-8 left-8 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-lg p-2 w-48 h-32 overflow-hidden pointer-events-none hidden md:block opacity-80 hover:opacity-100 transition-opacity">
-            <div className="relative w-full h-full bg-slate-50/50 rounded-lg">
-              {nodes.map(n => {
-                // Simple projection: Map -2500..2500 to 0..100%
-                const x = Math.max(0, Math.min(100, ((n.x + 2500) / 5000) * 100));
-                const y = Math.max(0, Math.min(100, ((n.y + 2500) / 5000) * 100));
-                return (
-                  <div key={n.id}
-                    className={`absolute rounded-full ${selectedNodeId === n.id ? 'bg-cyan-500 w-1.5 h-1.5 z-10' : 'bg-slate-300 w-1 h-1'}`}
-                    style={{ left: `${x}%`, top: `${y}%` }}
-                  />
-                );
-              })}
-              {/* Viewport Indicator */}
-              <div className="absolute border-2 border-cyan-500/30 bg-cyan-500/5 rounded-sm transition-all duration-75"
-                style={{
-                  left: `${Math.max(0, Math.min(100, ((-viewport.x / viewport.scale + 2500) / 5000) * 100))}%`,
-                  top: `${Math.max(0, Math.min(100, ((-viewport.y / viewport.scale + 2500) / 5000) * 100))}%`,
-                  width: `${Math.min(100, ((window.innerWidth / viewport.scale) / 5000) * 100)}%`,
-                  height: `${Math.min(100, ((window.innerHeight / viewport.scale) / 5000) * 100)}%`
-                }}
+                // Caso 2: Si no es array, error
+                if (!Array.isArray(parsed)) {
+                  throw new Error(`Respuesta no es un array. Tipo: ${typeof parsed}`);
+                }
+
+                // Caso 3: Si está vacío
+                if (parsed.length === 0) {
+                  throw new Error("El array de ideas está vacío");
+                }
+
+                // Normalizar: Convertir todo a strings
+                ideas = parsed.map((item, i) => {
+                  // Si es string, OK
+                  if (typeof item === 'string') {
+                    return item.trim();
+                  }
+
+                  // Si es objeto, intentar extraer texto
+                  if (typeof item === 'object' && item !== null) {
+                    const text = item.title || item.idea || item.text || item.name || item.description;
+                    if (text && typeof text === 'string') {
+                      console.warn(`[Brainstorm] Item ${i} es objeto, extrayendo texto de propiedad`);
+                      return text.trim();
+                    }
+
+                    console.warn(`[Brainstorm] Item ${i} es objeto sin propiedad de texto, usando JSON.stringify`);
+                    return JSON.stringify(item);
+                  }
+
+                  // Convertir cualquier otra cosa a string
+                  return String(item);
+                }).filter(text => text.length > 0);
+
+                // Validar que tengamos al menos 1 idea
+                if (ideas.length === 0) {
+                  throw new Error("No se pudieron extraer ideas válidas del array");
+                }
+
+                console.log(`[Brainstorm] ${ideas.length} ideas válidas extraídas:`, ideas);
+
+              } catch (parseError: any) {
+                console.error("[Brainstorm] Error completo:", parseError);
+                console.error("[Brainstorm] Respuesta recibida:", responseText);
+
+                // Intentar extraer JSON de markdown
+                const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/);
+                if (jsonMatch) {
+                  console.warn("[Brainstorm] Detectado JSON en markdown, reintentando...");
+                  try {
+                    const extracted = JSON.parse(jsonMatch[1]);
+                    if (Array.isArray(extracted)) {
+                      ideas = extracted.map(String);
+                      console.log("[Brainstorm] ✅ Extraído de markdown exitosamente");
+                    }
+                  } catch {
+                    throw new Error(`Error parseando JSON dentro de markdown: ${parseError.message}`);
+                  }
+                } else {
+                  throw new Error(`Error parseando respuesta como JSON: ${parseError.message}. Respuesta: ${responseText.substring(0, 100)}...`);
+                }
+              }
+
+              saveSnapshot();
+              const newNodes: IdeaNode[] = [];
+              const newConns: Connection[] = [];
+
+              ideas.forEach((ideaText: string, i: number) => {
+                const angle = (Math.PI * 2 / 3) * i;
+                const dist = 180;
+                const newNode: IdeaNode = {
+                  id: Date.now() + i + '',
+                  x: node.x + Math.cos(angle) * dist,
+                  y: node.y + Math.sin(angle) * dist,
+                  title: ideaText,
+                  summary: "Generado por IA",
+                  originalContext: "",
+                  category: node.category,
+                  cost: 0,
+                  links: [],
+                  checklist: [],
+                  images: [],
+                  attachments: [],
+                  type: 'text',
+                  status: 'draft',
+                  createdAt: Date.now()
+                };
+                newNodes.push(newNode);
+                newConns.push({ id: `c-${Date.now()}-${i}`, sourceId: node.id, targetId: newNode.id });
+              });
+
+              setNodes(prev => [...prev, ...newNodes]);
+              setConnections(prev => {
+                // Filtrar conexiones duplicadas
+                const existingIds = new Set(prev.map(c => `${c.sourceId}-${c.targetId}`));
+                const uniqueConns = newConns.filter(c => !existingIds.has(`${c.sourceId}-${c.targetId}`));
+                return [...prev, ...uniqueConns];
+              });
+              wakeSimulation();
+            } catch (e: any) {
+              console.error("[Brainstorm] Error completo:", e);
+
+              // Construir mensaje de error útil
+              let errorMessage = "Error generando ideas";
+
+              if (e.message) {
+                if (e.message.includes('parsear') || e.message.includes('JSON')) {
+                  errorMessage = "La IA devolvió un formato inválido. Intenta de nuevo.";
+                } else if (e.message.includes('array')) {
+                  errorMessage = "La IA no devolvió una lista de ideas. Intenta de nuevo.";
+                } else if (e.message.includes('API') || e.message.includes('fetch')) {
+                  errorMessage = "Error de conexión con el servidor. Verifica tu internet.";
+                } else {
+                  errorMessage = `Error: ${e.message}`;
+                }
+              }
+
+              console.error("[Brainstorm] Mensaje para usuario:", errorMessage);
+              alert(errorMessage);
+            } finally {
+              setIsProcessing(false);
+            }
+          }}
+        />
+      )}
+
+      {/* MINIMAP - Hidden on mobile by default, visible on larger screens */}
+      <div className="absolute bottom-8 left-8 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-lg p-2 w-48 h-32 overflow-hidden pointer-events-none hidden md:block opacity-80 hover:opacity-100 transition-opacity">
+        <div className="relative w-full h-full bg-slate-50/50 rounded-lg">
+          {nodes.map(n => {
+            // Simple projection: Map -2500..2500 to 0..100%
+            const x = Math.max(0, Math.min(100, ((n.x + 2500) / 5000) * 100));
+            const y = Math.max(0, Math.min(100, ((n.y + 2500) / 5000) * 100));
+            return (
+              <div key={n.id}
+                className={`absolute rounded-full ${selectedNodeId === n.id ? 'bg-cyan-500 w-1.5 h-1.5 z-10' : 'bg-slate-300 w-1 h-1'}`}
+                style={{ left: `${x}%`, top: `${y}%` }}
               />
-            </div>
-          </div>
-
+            );
+          })}
+          {/* Viewport Indicator */}
+          <div className="absolute border-2 border-cyan-500/30 bg-cyan-500/5 rounded-sm transition-all duration-75"
+            style={{
+              left: `${Math.max(0, Math.min(100, ((-viewport.x / viewport.scale + 2500) / 5000) * 100))}%`,
+              top: `${Math.max(0, Math.min(100, ((-viewport.y / viewport.scale + 2500) / 5000) * 100))}%`,
+              width: `${Math.min(100, ((window.innerWidth / viewport.scale) / 5000) * 100)}%`,
+              height: `${Math.min(100, ((window.innerHeight / viewport.scale) / 5000) * 100)}%`
+            }}
+          />
         </div>
-      );
-    };
-  const container = document.getElementById('root');
-  if (!container) throw new Error("Failed to find the root element");
-  const root = createRoot(container);
-  root.render(<App />);
+      </div>
+
+    </div>
+  );
+};
+const container = document.getElementById('root');
+if (!container) throw new Error("Failed to find the root element");
+const root = createRoot(container);
+root.render(<App />);
