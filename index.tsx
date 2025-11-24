@@ -1104,6 +1104,9 @@ const App = () => {
 
     // Verificar permisos explícitamente antes de solicitar acceso al micrófono
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isChrome = /Chrome/.test(navigator.userAgent) && /Android/.test(navigator.userAgent);
+    const isSafari = /Safari/.test(navigator.userAgent) && /iPhone|iPad|iPod/.test(navigator.userAgent);
+    const isFirefox = /Firefox/.test(navigator.userAgent);
 
     // Intentar verificar permisos si la API está disponible
     if (navigator.permissions && navigator.permissions.query) {
@@ -1115,20 +1118,41 @@ const App = () => {
           setIsRecording(false);
           setRecognitionStatus("");
 
-          let denyMessage = "❌ Permisos de micrófono denegados\n\n";
-          if (isMobile) {
-            denyMessage += "Para usar el reconocimiento de voz en tu móvil:\n\n";
-            denyMessage += "1. Ve a Configuración de tu navegador\n";
-            denyMessage += "2. Busca 'Permisos del sitio' o 'Configuración de sitios'\n";
-            denyMessage += "3. Encuentra 'asistente-six.vercel.app'\n";
-            denyMessage += "4. Activa los permisos del Micrófono\n";
-            denyMessage += "5. Recarga esta página\n\n";
+          let denyMessage = "🚫 PERMISOS BLOQUEADOS\n\n";
+          denyMessage += "El popup de permisos NO aparecerá porque ya negaste los permisos antes.\n\n";
+          denyMessage += "Para activar el micrófono manualmente:\n\n";
+
+          if (isChrome) {
+            denyMessage += "📱 CHROME (Android):\n";
+            denyMessage += "1. Toca el candado 🔒 junto a la URL\n";
+            denyMessage += "2. Toca 'Permisos'\n";
+            denyMessage += "3. Micrófono → 'Permitir'\n";
+            denyMessage += "4. Recarga la página\n";
+          } else if (isSafari) {
+            denyMessage += "🍎 SAFARI (iPhone/iPad):\n";
+            denyMessage += "1. Toca 'AA' en la barra de direcciones\n";
+            denyMessage += "2. Toca 'Configuración del sitio'\n";
+            denyMessage += "3. Micrófono → 'Permitir'\n";
+            denyMessage += "4. Recarga la página\n";
+          } else if (isFirefox) {
+            denyMessage += "🦊 FIREFOX:\n";
+            denyMessage += "1. Toca el candado 🔒\n";
+            denyMessage += "2. 'Editar permisos'\n";
+            denyMessage += "3. Marca 'Micrófono'\n";
+            denyMessage += "4. Recarga la página\n";
+          } else if (isMobile) {
+            denyMessage += "1. Toca el candado 🔒 o ícono ⓘ junto a la URL\n";
+            denyMessage += "2. Busca 'Permisos' o 'Configuración'\n";
+            denyMessage += "3. Encontrá 'Micrófono'\n";
+            denyMessage += "4. Cambialo a 'Permitir'\n";
+            denyMessage += "5. Recarga la página\n";
           } else {
-            denyMessage += "Haz clic en el ícono del candado (🔒) en la barra de direcciones\n";
-            denyMessage += "y permite el acceso al micrófono.\n\n";
+            denyMessage += "1. Haz clic en el icono del candado 🔒 en la barra de direcciones\n";
+            denyMessage += "2. Permite el acceso al micrófono\n";
+            denyMessage += "3. Recarga la página\n";
           }
 
-          const useManual = confirm(denyMessage + "¿Quieres escribir tu idea manualmente?");
+          const useManual = confirm(denyMessage + "\n¿Quieres escribir tu idea manualmente?");
           if (useManual) {
             const text = prompt("Escribe tu idea:");
             if (text && text.trim()) {
