@@ -597,6 +597,7 @@ const App = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [recognitionStatus, setRecognitionStatus] = useState<string>("");
+  const [lastProcessTime, setLastProcessTime] = useState(0); // Rate limiting
 
   // Audio Visualizer State
   const [audioData, setAudioData] = useState<Uint8Array>(new Uint8Array(0));
@@ -606,6 +607,7 @@ const App = () => {
   const animationFrameRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const audioInitLock = useRef<boolean>(false); // Prevenir race conditions en audio init
 
   // Interaction States
   const [tempConnection, setTempConnection] = useState<{ sourceId: string, endX: number, endY: number } | null>(null);
@@ -693,6 +695,23 @@ const App = () => {
     }, 1000);
     return () => clearTimeout(timeoutId);
   }, [nodes, connections, viewport, selectedNodeId, isLoaded]);
+
+  // Handle Device Orientation Changes (Mobile)
+  useEffect(() => {
+    const handleOrientationChange = () => {
+      console.log('[Mobile] Orientación cambiada');
+      // El viewport ya se ajustará automáticamente con el resize del window
+      // pero podemos forzar un re-render si es necesario
+    };
+
+    window.addEventListener('orientationchange', handleOrientationChange);
+    window.addEventListener('resize', handleOrientationChange);
+
+    return () => {
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      window.removeEventListener('resize', handleOrientationChange);
+    };
+  }, []);
 
 
   // -- HISTORY MANAGEMENT --
@@ -922,29 +941,36 @@ const App = () => {
   };
 
   const startAudioAnalysis = async () => {
-    // Cerrar stream anterior si existe
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => track.stop());
-      audioStreamRef.current = null;
+    // Prevenir race conditions con lock
+    if (audioInitLock.current) {
+      console.warn('[Audio] Ya se está inicializando el audio, esperando...');
+      return;
     }
 
-    // Cerrar AudioContext anterior si existe
-    if (audioContextRef.current) {
-      try {
-        await audioContextRef.current.close();
-      } catch (e) {
-        console.log("[Audio] Error cerrando AudioContext anterior:", e);
-      }
-      audioContextRef.current = null;
-    }
-
-    // Cancelar animación anterior si existe
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-
+    audioInitLock.current = true;
     try {
+      // Cerrar stream anterior si existe
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(track => track.stop());
+        audioStreamRef.current = null;
+      }
+
+      // Cerrar AudioContext anterior si existe
+      if (audioContextRef.current) {
+        try {
+          await audioContextRef.current.close();
+        } catch (e) {
+          console.log("[Audio] Error cerrando AudioContext anterior:", e);
+        }
+        audioContextRef.current = null;
+      }
+
+      // Cancelar animación anterior si existe
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+
       console.log("[Audio] Solicitando acceso al micrófono...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       console.log("[Audio] Acceso al micrófono concedido");
@@ -981,6 +1007,8 @@ const App = () => {
     } catch (e: any) {
       console.error("[Audio] Error al inicializar visualizador de audio:", e);
       throw e; // Re-lanzar el error para que handleMicClick lo maneje
+    } finally {
+      audioInitLock.current = false;
     }
   };
 
@@ -1017,9 +1045,15 @@ const App = () => {
   };
 
   const getSupportedMimeType = () => {
-    if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
-      return '';
+    if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined') {
+      return 'audio/webm'; // Fallback por defecto
     }
+
+    if (typeof MediaRecorder.isTypeSupported !== 'function') {
+      console.warn('[Audio] MediaRecorder.isTypeSupported no disponible, usando fallback');
+      return 'audio/webm';
+    }
+
     const mimeTypes = [
       'audio/webm;codecs=opus',
       'audio/webm',
@@ -1027,7 +1061,9 @@ const App = () => {
       'audio/ogg',
       'audio/wav'
     ];
-    return mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+
+    const supported = mimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+    return supported || 'audio/webm'; // Fallback explícito
   };
 
   const isSecureOrigin = () => {
@@ -1367,6 +1403,15 @@ const App = () => {
   // -- AI SERVICE --
 
   const processInput = async (input: string | { image: string, prompt?: string } | { audio: string, mimeType: string }, isImage = false) => {
+    // Rate limiting: prevenir spam de requests
+    const now = Date.now();
+    if (now - lastProcessTime < 2000) { // 2 segundos de cooldown
+      console.warn('[ProcessInput] Cooldown activo, espera antes de procesar otra idea');
+      alert('Por favor espera un momento antes de procesar otra idea.');
+      return;
+    }
+    setLastProcessTime(now);
+
     saveSnapshot(); // Save state before AI creates new nodes
 
     let text = "";
@@ -1410,8 +1455,19 @@ const App = () => {
 
       // CRÍTICO: Si solo hay audio sin texto, necesitamos un prompt que pida JSON
       if (audioData && !text) {
-        fullPrompt = "Transcribe el audio y estructura la idea como JSON siguiendo el formato solicitado en las instrucciones del sistema.";
-        console.log("[ProcessInput] Audio sin texto - usando prompt automático para JSON");
+        fullPrompt = `Escucha el audio adjunto, transcríbelo y extrae la información para generar ÚNICAMENTE JSON válido con esta estructura exacta:
+
+{
+  "title": "título corto (max 5 palabras)",
+  "summary": "resumen claro (max 20 palabras)",
+  "category": "categoría",
+  "cost": 0,
+  "links": [],
+  "checklist": [{"text": "tarea", "done": false}]
+}
+
+NO agregues texto explicativo antes o después del JSON. Devuelve SOLO el objeto JSON.`;
+        console.log("[ProcessInput] Audio sin texto - usando prompt automático con estructura JSON explícita");
       }
 
       if (parentNode) {
@@ -1441,23 +1497,28 @@ const App = () => {
       });
 
       let data;
+      let cleanedResponse = ""; // Declarar fuera del try para que esté disponible en catch
       try {
-        // Limpiar markdown code blocks si están presentes
-        let cleanedResponse = responseText || "{}";
+        // Limpiar markdown code blocks y extraer JSON puro
+        cleanedResponse = responseText || "{}";
 
-        // Remover ```json o ``` del inicio y final
-        cleanedResponse = cleanedResponse.trim();
-        if (cleanedResponse.startsWith('```json')) {
-          cleanedResponse = cleanedResponse.replace(/^```json\s*/i, '');
-        } else if (cleanedResponse.startsWith('```')) {
+        // Método robusto: buscar las llaves del JSON
+        const firstBrace = cleanedResponse.indexOf('{');
+        const lastBrace = cleanedResponse.lastIndexOf('}');
+
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          // Extraer solo el contenido entre llaves
+          cleanedResponse = cleanedResponse.substring(firstBrace, lastBrace + 1);
+        } else {
+          // Fallback: limpiar markdown tradicional
+          cleanedResponse = cleanedResponse.trim();
+
+          // Remover ```json, ```JSON, ``` json, etc. (case insensitive)
+          cleanedResponse = cleanedResponse.replace(/^```\s*json\s*/i, '');
           cleanedResponse = cleanedResponse.replace(/^```\s*/, '');
-        }
-
-        if (cleanedResponse.endsWith('```')) {
           cleanedResponse = cleanedResponse.replace(/\s*```$/, '');
+          cleanedResponse = cleanedResponse.trim();
         }
-
-        cleanedResponse = cleanedResponse.trim();
 
         console.log("[ProcessInput] Respuesta limpia para parsear:", cleanedResponse.substring(0, 200) + "...");
 
@@ -1465,6 +1526,25 @@ const App = () => {
 
         // Debug logging
         console.log("[ProcessInput] Respuesta AI parseada:", data);
+
+        // Validar estructura mínima del JSON
+        if (!data || typeof data !== 'object') {
+          throw new Error('La respuesta no es un objeto JSON válido');
+        }
+
+        // Validar y normalizar campos con valores por defecto
+        const validatedData = {
+          title: (data.title && typeof data.title === 'string') ? data.title.trim() : 'Nueva Idea',
+          summary: (data.summary && typeof data.summary === 'string') ? data.summary.trim() : 'Sin resumen',
+          category: (data.category && typeof data.category === 'string') ? data.category.trim() : 'General',
+          cost: (typeof data.cost === 'number' && data.cost >= 0) ? data.cost : 0,
+          links: Array.isArray(data.links) ? data.links.filter(l => typeof l === 'string') : [],
+          checklist: Array.isArray(data.checklist) ? data.checklist : []
+        };
+
+        // Reemplazar data con validatedData
+        data = validatedData;
+        console.log("[ProcessInput] Datos validados:", data);
 
         // Validar y normalizar checklist
         if (data.checklist) {
@@ -1505,8 +1585,18 @@ const App = () => {
         }
 
       } catch (parseError) {
-        console.error("Error parsing AI response:", parseError, "Response:", responseText);
-        throw new Error("La respuesta de la IA no es válida. Intenta de nuevo.");
+        console.error("[ProcessInput] Error parsing AI response:", parseError);
+        console.error("[ProcessInput] Respuesta completa recibida:", responseText);
+        console.error("[ProcessInput] Respuesta limpia intentada:", cleanedResponse);
+
+        throw new Error(`Error procesando la idea: La respuesta de la IA no es válida.
+
+Posibles causas:
+- La IA devolvió texto en lugar de JSON estructurado
+- Problema de conectividad con Gemini
+- Audio no transcrito correctamente
+
+Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola.`);
       }
 
       let startX, startY;
@@ -1977,8 +2067,14 @@ const App = () => {
       </div>
 
       {/* HEADER UI */}
-      <div className="absolute top-4 left-4 right-4 z-50 pointer-events-none flex items-start justify-between gap-4">
-        <div className="flex gap-2 pointer-events-auto">
+      <div
+        className="absolute top-4 z-50 pointer-events-none flex items-start justify-between gap-2 sm:gap-4"
+        style={{
+          left: 'max(1rem, env(safe-area-inset-left, 1rem))',
+          right: 'max(1rem, env(safe-area-inset-right, 1rem))'
+        }}
+      >
+        <div className="flex gap-2 pointer-events-auto flex-shrink-0">
           <button onClick={() => setIsMenuOpen(true)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50">
             <Menu className="w-5 h-5 text-slate-700" />
           </button>
@@ -1999,7 +2095,7 @@ const App = () => {
           </div>
         </div>
 
-        <div className="pointer-events-auto flex-1 max-w-md">
+        <div className="pointer-events-auto flex-1 max-w-md hidden sm:block">
           <div className="bg-white/90 backdrop-blur-md border border-slate-200 rounded-full p-3 shadow-lg flex items-center gap-2 w-full">
             <Search className="w-5 h-5 text-slate-400" />
             <input

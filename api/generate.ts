@@ -53,7 +53,7 @@ export default async function handler(req: Request) {
         hint: 'Check Settings → Environment Variables in your Vercel project',
         availableEnvVars: envKeys
       }), {
-        status: 500,
+        status: 503, // Service Unavailable (configuración faltante)
         headers: { 'Content-Type': 'application/json' }
       });
     }
@@ -61,10 +61,15 @@ export default async function handler(req: Request) {
     console.log('[API] ✅ API Key encontrada, longitud:', apiKey.length);
     console.log('[API] API Key empieza con:', apiKey.substring(0, 10) + '...');
 
-    // Validar formato de API Key (simple check)
-    if (apiKey.length < 20) {
-      console.error('[API] API Key demasiado corta:', apiKey.length);
-      return new Response(JSON.stringify({ error: 'Invalid API Key format' }), {
+    // Validar formato de API Key (Google API Keys típicamente son AIzaSy... con 39 chars)
+    if (apiKey.length < 39 || !apiKey.startsWith('AIza')) {
+      console.error('[API] API Key con formato inválido. Longitud:', apiKey.length, 'Prefijo:', apiKey.substring(0, 4));
+      return new Response(JSON.stringify({
+        error: 'Invalid API Key format',
+        hint: 'Google API Keys should start with "AIza" and be 39 characters long',
+        received_length: apiKey.length,
+        received_prefix: apiKey.substring(0, 4)
+      }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -210,7 +215,7 @@ export default async function handler(req: Request) {
       if (!success) {
         try {
           const errorText = await response.text();
-          console.error('[API] FAT AL: Todos los modelos fallaron. Respuesta:', errorText.substring(0, 500));
+          console.error('[API] FATAL: Todos los modelos fallaron. Respuesta:', errorText.substring(0, 500));
           return new Response(JSON.stringify({
             error: `Model ${primaryModel} not supported. Tried alternatives: ${modelAlternatives.join(', ')}`,
             details: errorText.substring(0, 200),
