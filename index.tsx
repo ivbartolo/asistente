@@ -921,6 +921,79 @@ const App = () => {
     return "bg-amber-100 text-slate-800 text-xs font-medium py-2 px-4 rounded-full border-2 border-amber-300 shadow-sm";
   };
 
+  // Calcular punto de intersección en el borde de un nodo
+  // Usa geometría de línea-rectángulo para encontrar el punto exacto de intersección
+  const getNodeEdgePoint = (nodeX: number, nodeY: number, nodeWidth: number, nodeHeight: number, targetX: number, targetY: number) => {
+    // Centro del nodo
+    const centerX = nodeX + nodeWidth / 2;
+    const centerY = nodeY + nodeHeight / 2;
+    
+    // Vector desde el centro hacia el objetivo
+    const dx = targetX - centerX;
+    const dy = targetY - centerY;
+    
+    // Si el vector es cero, devolver el centro del borde derecho (por defecto)
+    if (dx === 0 && dy === 0) {
+      return { x: nodeX + nodeWidth, y: centerY };
+    }
+    
+    // Calcular intersección con el rectángulo usando el algoritmo de línea-rectángulo
+    // Línea desde el centro hasta el objetivo (extendida)
+    const halfWidth = nodeWidth / 2;
+    const halfHeight = nodeHeight / 2;
+    
+    // Calcular el punto de intersección con cada borde
+    let t = Infinity;
+    let edgeX = centerX;
+    let edgeY = centerY;
+    
+    // Borde derecho (x = nodeX + nodeWidth)
+    if (dx > 0) {
+      const tRight = halfWidth / dx;
+      const yRight = centerY + dy * tRight;
+      if (yRight >= nodeY && yRight <= nodeY + nodeHeight && tRight < t) {
+        t = tRight;
+        edgeX = nodeX + nodeWidth;
+        edgeY = yRight;
+      }
+    }
+    
+    // Borde izquierdo (x = nodeX)
+    if (dx < 0) {
+      const tLeft = -halfWidth / dx;
+      const yLeft = centerY + dy * tLeft;
+      if (yLeft >= nodeY && yLeft <= nodeY + nodeHeight && tLeft < t) {
+        t = tLeft;
+        edgeX = nodeX;
+        edgeY = yLeft;
+      }
+    }
+    
+    // Borde inferior (y = nodeY + nodeHeight)
+    if (dy > 0) {
+      const tBottom = halfHeight / dy;
+      const xBottom = centerX + dx * tBottom;
+      if (xBottom >= nodeX && xBottom <= nodeX + nodeWidth && tBottom < t) {
+        t = tBottom;
+        edgeX = xBottom;
+        edgeY = nodeY + nodeHeight;
+      }
+    }
+    
+    // Borde superior (y = nodeY)
+    if (dy < 0) {
+      const tTop = -halfHeight / dy;
+      const xTop = centerX + dx * tTop;
+      if (xTop >= nodeX && xTop <= nodeX + nodeWidth && tTop < t) {
+        t = tTop;
+        edgeX = xTop;
+        edgeY = nodeY;
+      }
+    }
+    
+    return { x: edgeX, y: edgeY };
+  };
+
   const drawCurve = (x1: number, y1: number, x2: number, y2: number) => {
     return `M ${x1} ${y1} C ${x1 + (x2 - x1) / 2} ${y1}, ${x2 - (x2 - x1) / 2} ${y2}, ${x2} ${y2}`;
   };
@@ -1835,7 +1908,7 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
 
       if (!isDraggingNodeRef.current && dragStartPos.current) {
         const dist = Math.hypot(e.clientX - dragStartPos.current.x, e.clientY - dragStartPos.current.y);
-        if (dist > 5) {
+        if (dist > 8) {
           isDraggingNodeRef.current = true;
           saveSnapshot(); // Save state before dragging actually changes things significantly
         }
@@ -2072,11 +2145,11 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
         {/* EXPORT SECTION */}
         <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-2">
           <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Exportar Vista</h3>
-          <button onClick={() => { exportAsImage(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
+          <button onClick={() => { exportAsImage(); setIsMenuOpen(false); }} title="Exportar el mapa mental como imagen PNG" className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
             <Download className="w-4 h-4 text-cyan-600" />
             Imagen (PNG)
           </button>
-          <button onClick={() => { exportAsMarkdown(); setIsMenuOpen(false); }} className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
+          <button onClick={() => { exportAsMarkdown(); setIsMenuOpen(false); }} title="Exportar el mapa mental como documento Markdown" className="w-full flex items-center gap-3 p-2 hover:bg-white rounded-lg text-slate-600 text-sm transition-colors border border-transparent hover:border-slate-200">
             <FileText className="w-4 h-4 text-violet-500" />
             Markdown (Texto)
           </button>
@@ -2143,25 +2216,53 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
               const target = nodes.find(n => n.id === conn.targetId);
               if (!source || !target) return null;
               const isRootSource = !connections.some(c => c.targetId === source.id);
-              return <path key={conn.id} d={drawCurve(source.x, source.y, target.x, target.y)} stroke={isRootSource ? "#22d3ee" : "#a3e635"} strokeWidth={isRootSource ? "3" : "1.5"} fill="none" strokeLinecap="round" />;
+              
+              // Dimensiones aproximadas de los nodos (basadas en el estilo)
+              // Nodos raíz: más grandes (text-lg, py-4 px-6), subnodos: más pequeños (text-xs, py-2 px-4)
+              const isSourceRoot = !connections.some(c => c.targetId === source.id);
+              const isTargetRoot = !connections.some(c => c.targetId === target.id);
+              
+              const sourceWidth = 225; // Promedio entre minWidth 200 y maxWidth 250
+              const sourceHeight = isSourceRoot ? 70 : 50; // Nodos raíz son más altos
+              
+              const targetWidth = 225;
+              const targetHeight = isTargetRoot ? 70 : 50;
+              
+              // Calcular puntos de conexión en los bordes de los nodos
+              const sourcePoint = getNodeEdgePoint(source.x, source.y, sourceWidth, sourceHeight, target.x, target.y);
+              const targetPoint = getNodeEdgePoint(target.x, target.y, targetWidth, targetHeight, source.x, source.y);
+              
+              return <path key={conn.id} d={drawCurve(sourcePoint.x, sourcePoint.y, targetPoint.x, targetPoint.y)} stroke={isRootSource ? "#22d3ee" : "#a3e635"} strokeWidth={isRootSource ? "3" : "1.5"} fill="none" strokeLinecap="round" />;
             })}
-            {tempConnection && <path d={drawCurve(nodes.find(n => n.id === tempConnection.sourceId)!.x, nodes.find(n => n.id === tempConnection.sourceId)!.y, tempConnection.endX, tempConnection.endY)} stroke="#94a3b8" strokeWidth="2" strokeDasharray="5,5" fill="none" />}
+            {tempConnection && (() => {
+              const sourceNode = nodes.find(n => n.id === tempConnection.sourceId);
+              if (!sourceNode) return null;
+              const nodeWidth = 225;
+              const nodeHeight = 60;
+              const sourcePoint = getNodeEdgePoint(sourceNode.x, sourceNode.y, nodeWidth, nodeHeight, tempConnection.endX, tempConnection.endY);
+              return <path d={drawCurve(sourcePoint.x, sourcePoint.y, tempConnection.endX, tempConnection.endY)} stroke="#94a3b8" strokeWidth="2" strokeDasharray="5,5" fill="none" />;
+            })()}
           </svg>
 
           {visibleNodes.map((node: any) => (
             <div
               key={node.id}
               className={`
-                absolute rounded-xl p-4 shadow-lg cursor-pointer transition-all duration-200 border-2
+                absolute rounded-xl p-4 shadow-lg transition-all duration-200 border-2
                 ${selectedNodeId === node.id ? 'border-cyan-500 shadow-cyan-200' : 'border-slate-200'}
                 ${node.category === 'Tecnología' ? 'bg-blue-50' : node.category === 'Diseño' ? 'bg-purple-50' : node.category === 'Marketing' ? 'bg-green-50' : node.category === 'Negocio' ? 'bg-yellow-50' : 'bg-white'}
+                ${draggingNodeId.current === node.id && isDraggingNodeRef.current 
+                  ? 'cursor-grabbing shadow-2xl scale-105 z-50' 
+                  : draggingNodeId.current === node.id 
+                    ? 'cursor-grab' 
+                    : 'cursor-pointer'}
               `}
               style={{ left: node.x, top: node.y, minWidth: 200, maxWidth: 250 }}
               onClick={() => setSelectedNodeId(node.id)}
               onDoubleClick={() => setInspectorNodeId(node.id)}
               onPointerDown={(e) => handleNodePointerDown(e, node.id)}
             >
-              <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)}>
+              <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)} title="Crear conexión con otro nodo (arrastra desde aquí)">
                 <Plus className="w-4 h-4 text-white" />
               </div>
               <div className={`${getNodeStyle(node)} shadow-md flex items-center gap-2 max-w-[180px] sm:max-w-[200px] relative overflow-hidden`}>
@@ -2271,6 +2372,7 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
               }
             }}
             disabled={isProcessing}
+            title="Enviar idea (o presiona Enter)"
             className="w-12 h-12 bg-cyan-600 rounded-full shadow-lg flex items-center justify-center hover:bg-cyan-700 active:scale-95 transition-all disabled:opacity-50"
           >
             <Send className="w-5 h-5 text-white" />
@@ -2390,29 +2492,38 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
             setNodes(prev => prev.map(n => n.id === updatedNode.id ? updatedNode : n));
           }}
           onDelete={() => {
-            if (window.confirm("¿Estás seguro de que quieres eliminar este nodo y todos sus subnodos? Esta acción no se puede deshacer.")) {
-              saveSnapshot();
+            // Identificar todos los nodos a eliminar (nodo actual + descendientes recursivos)
+            const nodesToDelete = new Set<string>();
+            nodesToDelete.add(inspectorNodeId);
 
-              // Identificar todos los nodos a eliminar (nodo actual + descendientes recursivos)
-              const nodesToDelete = new Set<string>();
-              nodesToDelete.add(inspectorNodeId);
+            const queue = [inspectorNodeId];
+            while (queue.length > 0) {
+              const currentId = queue.shift()!;
+              // Encontrar hijos donde el nodo actual es el origen
+              const children = connections
+                .filter(c => c.sourceId === currentId)
+                .map(c => c.targetId);
 
-              const queue = [inspectorNodeId];
-              while (queue.length > 0) {
-                const currentId = queue.shift()!;
-                // Encontrar hijos donde el nodo actual es el origen
-                const children = connections
-                  .filter(c => c.sourceId === currentId)
-                  .map(c => c.targetId);
-
-                for (const childId of children) {
-                  // Evitar ciclos infinitos si los hubiera
-                  if (!nodesToDelete.has(childId)) {
-                    nodesToDelete.add(childId);
-                    queue.push(childId);
-                  }
+              for (const childId of children) {
+                // Evitar ciclos infinitos si los hubiera
+                if (!nodesToDelete.has(childId)) {
+                  nodesToDelete.add(childId);
+                  queue.push(childId);
                 }
               }
+            }
+
+            const nodeToDelete = nodes.find(n => n.id === inspectorNodeId);
+            const nodeTitle = nodeToDelete?.title || 'este nodo';
+            const totalNodes = nodesToDelete.size;
+            const subnodesCount = totalNodes - 1;
+
+            const confirmMessage = subnodesCount > 0
+              ? `¿Estás seguro de que quieres eliminar "${nodeTitle}" y sus ${subnodesCount} subnodo${subnodesCount > 1 ? 's' : ''}?\n\nTotal: ${totalNodes} nodo${totalNodes > 1 ? 's' : ''} será${totalNodes > 1 ? 'n' : ''} eliminado${totalNodes > 1 ? 's' : ''}.\n\n⚠️ Esta acción no se puede deshacer.`
+              : `¿Estás seguro de que quieres eliminar "${nodeTitle}"?\n\n⚠️ Esta acción no se puede deshacer.`;
+
+            if (window.confirm(confirmMessage)) {
+              saveSnapshot();
 
               setNodes(prev => prev.filter(n => !nodesToDelete.has(n.id)));
               setConnections(prev => prev.filter(c => !nodesToDelete.has(c.sourceId) && !nodesToDelete.has(c.targetId)));
