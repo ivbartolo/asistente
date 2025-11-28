@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import './index.css';
 import { createRoot } from 'react-dom/client';
-import { Mic, Search, Plus, Calendar, X, Link as LinkIcon, DollarSign, FileText, BrainCircuit, MoreHorizontal, Layout, Share2, Info, Menu, CornerDownRight, Disc, ArrowLeft, Sparkles, Camera, Undo, Redo, Image as ImageIcon, MessageCircle, Send, CheckSquare, Square, Download, FileType } from 'lucide-react';
+import { Mic, Search, Plus, Calendar, X, Link as LinkIcon, DollarSign, FileText, BrainCircuit, MoreHorizontal, Layout, Share2, Info, Menu, CornerDownRight, Disc, ArrowLeft, Sparkles, Camera, Undo, Redo, Image as ImageIcon, MessageCircle, Send, CheckSquare, Square, Download, Target, FileType } from 'lucide-react';
 import { db, saveViewport, saveSelectedNode, getMetadata } from './db';
 import { IdeaNode, Connection, Viewport, ChatMessage, CheckListItem, NodeType, NodeStatus, AttachmentFile } from './types';
 
@@ -1848,6 +1848,7 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
           }
           return n;
         }));
+        wakeSimulation();
       }
       return;
     }
@@ -2019,6 +2020,22 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
   return (
     <div className="w-full h-screen bg-[#f0f2f5] overflow-hidden flex relative font-sans text-slate-800 select-none touch-none">
 
+      {/* LOADING OVERLAY */}
+      {isProcessing && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center pointer-events-none">
+          <div className="bg-white p-6 rounded-2xl shadow-2xl flex flex-col items-center gap-4 animate-in zoom-in-95 fade-in">
+            <div className="relative">
+              <div className="animate-spin rounded-full h-12 w-12 border-4 border-cyan-600 border-t-transparent" />
+              <BrainCircuit className="w-6 h-6 text-cyan-600 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+            </div>
+            <div className="text-center">
+              <p className="font-semibold text-slate-800">Generando idea...</p>
+              <p className="text-sm text-slate-500">La IA está pensando</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* SIDEBAR MENU */}
       <div
         className={`fixed inset-y-0 left-0 w-72 bg-white shadow-2xl transform transition-transform duration-300 z-[100] flex flex-col ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}
@@ -2075,21 +2092,21 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
         }}
       >
         <div className="flex gap-2 pointer-events-auto flex-shrink-0">
-          <button onClick={() => setIsMenuOpen(true)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50">
+          <button onClick={() => setIsMenuOpen(true)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50" title="Mis Proyectos">
             <Menu className="w-5 h-5 text-slate-700" />
           </button>
           {selectedNodeId && (
-            <button onClick={() => setSelectedNodeId(null)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50 flex items-center gap-2 px-4">
+            <button onClick={() => setSelectedNodeId(null)} className="p-3 bg-white rounded-full shadow-md border border-slate-200 hover:bg-slate-50 flex items-center gap-2 px-4" title="Volver a todos los proyectos">
               <ArrowLeft className="w-5 h-5 text-slate-700" />
               <span className="text-xs font-bold text-slate-600 hidden sm:inline">Todos</span>
             </button>
           )}
           <div className="flex bg-white rounded-full shadow-md border border-slate-200 ml-2">
-            <button onClick={undo} disabled={pastHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-l-full disabled:opacity-30">
+            <button onClick={undo} disabled={pastHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-l-full disabled:opacity-30" title="Deshacer">
               <Undo className="w-5 h-5 text-slate-600" />
             </button>
             <div className="w-px bg-slate-200 my-2"></div>
-            <button onClick={redo} disabled={futureHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-r-full disabled:opacity-30">
+            <button onClick={redo} disabled={futureHistory.current.length === 0} className="p-3 hover:bg-slate-50 rounded-r-full disabled:opacity-30" title="Rehacer">
               <Redo className="w-5 h-5 text-slate-600" />
             </button>
           </div>
@@ -2134,9 +2151,14 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
           {visibleNodes.map((node: any) => (
             <div
               key={node.id}
-              data-node-id={node.id}
-              className={`node-interactive absolute group flex justify-center items-center touch-none ${node.isDimmed ? 'opacity-20 blur-sm grayscale' : 'opacity-100'} ${selectedNodeId === node.id ? 'z-50' : 'z-10'} transition-transform duration-75`}
-              style={{ transform: `translate(${node.x}px, ${node.y}px) translate(-50%, -50%)` }}
+              className={`
+                absolute rounded-xl p-4 shadow-lg cursor-pointer transition-all duration-200 border-2
+                ${selectedNodeId === node.id ? 'border-cyan-500 shadow-cyan-200' : 'border-slate-200'}
+                ${node.category === 'Tecnología' ? 'bg-blue-50' : node.category === 'Diseño' ? 'bg-purple-50' : node.category === 'Marketing' ? 'bg-green-50' : node.category === 'Negocio' ? 'bg-yellow-50' : 'bg-white'}
+              `}
+              style={{ left: node.x, top: node.y, minWidth: 200, maxWidth: 250 }}
+              onClick={() => setSelectedNodeId(node.id)}
+              onDoubleClick={() => setInspectorNodeId(node.id)}
               onPointerDown={(e) => handleNodePointerDown(e, node.id)}
             >
               <div className={`absolute -right-5 w-8 h-8 bg-blue-500/80 rounded-full flex items-center justify-center shadow-md z-50 touch-none ${selectedNodeId === node.id ? 'opacity-100 scale-100' : 'opacity-0 scale-75 pointer-events-none'} transition-all`} onPointerDown={(e) => startConnection(e, node.id)}>
@@ -2177,8 +2199,8 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
 
         {/* Camera Button */}
         <div className="pointer-events-auto relative">
-          <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="absolute inset-0 opacity-0 z-10 cursor-pointer" />
-          <button className="w-12 h-12 bg-white rounded-full shadow-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 active:scale-95 transition-transform text-slate-600">
+          <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="absolute inset-0 opacity-0 z-10 cursor-pointer" title="Subir imagen" />
+          <button className="w-12 h-12 bg-white rounded-full shadow-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 active:scale-95 transition-transform text-slate-600" title="Subir imagen">
             <Camera className="w-6 h-6" />
           </button>
         </div>
@@ -2193,6 +2215,7 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
           <button
             onClick={handleMicClick}
             disabled={isProcessing}
+            title={isRecording ? "Detener grabación" : "Grabar audio de tu idea"}
             className={`
                 relative pointer-events-auto flex items-center justify-center w-16 h-16 rounded-full shadow-2xl
                 transition-all duration-300 transform hover:scale-105 active:scale-95 overflow-hidden
@@ -2262,6 +2285,7 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
       {/* FLOATING CHAT BUTTON */}
       <button
         onClick={() => setIsChatOpen(true)}
+        title="Preguntar al asistente IA"
         className={`fixed right-4 sm:right-6 pointer-events-auto w-14 h-14 bg-white text-cyan-600 rounded-full shadow-xl border border-cyan-100 flex items-center justify-center hover:scale-105 active:scale-95 transition-all ${inspectorNodeId ? 'z-[60]' : 'z-[100]'
           }`}
         style={{
@@ -2272,6 +2296,20 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
         }}
       >
         <MessageCircle className="w-7 h-7" />
+      </button>
+
+      {/* CENTER VIEW BUTTON */}
+      <button
+        onClick={() => setViewport({ x: 0, y: 0, scale: 1 })}
+        title="Centrar vista"
+        className="fixed right-4 sm:right-6 pointer-events-auto w-12 h-12 bg-white text-slate-600 rounded-full shadow-lg border border-slate-200 flex items-center justify-center hover:scale-105 active:scale-95 transition-all z-40"
+        style={{
+          bottom: inspectorNodeId
+            ? 'calc(85vh + 5rem)'
+            : 'calc(6.5rem + env(safe-area-inset-bottom, 32px))',
+        }}
+      >
+        <Target className="w-6 h-6" />
       </button>
 
       {/* CHAT OVERLAY */}
@@ -2352,11 +2390,35 @@ Por favor, intenta de nuevo. Si el error persiste, revisa los logs de la consola
             setNodes(prev => prev.map(n => n.id === updatedNode.id ? updatedNode : n));
           }}
           onDelete={() => {
-            saveSnapshot();
-            setNodes(prev => prev.filter(n => n.id !== inspectorNodeId));
-            setConnections(prev => prev.filter(c => c.sourceId !== inspectorNodeId && c.targetId !== inspectorNodeId));
-            setInspectorNodeId(null);
-            setSelectedNodeId(null);
+            if (window.confirm("¿Estás seguro de que quieres eliminar este nodo y todos sus subnodos? Esta acción no se puede deshacer.")) {
+              saveSnapshot();
+
+              // Identificar todos los nodos a eliminar (nodo actual + descendientes recursivos)
+              const nodesToDelete = new Set<string>();
+              nodesToDelete.add(inspectorNodeId);
+
+              const queue = [inspectorNodeId];
+              while (queue.length > 0) {
+                const currentId = queue.shift()!;
+                // Encontrar hijos donde el nodo actual es el origen
+                const children = connections
+                  .filter(c => c.sourceId === currentId)
+                  .map(c => c.targetId);
+
+                for (const childId of children) {
+                  // Evitar ciclos infinitos si los hubiera
+                  if (!nodesToDelete.has(childId)) {
+                    nodesToDelete.add(childId);
+                    queue.push(childId);
+                  }
+                }
+              }
+
+              setNodes(prev => prev.filter(n => !nodesToDelete.has(n.id)));
+              setConnections(prev => prev.filter(c => !nodesToDelete.has(c.sourceId) && !nodesToDelete.has(c.targetId)));
+              setInspectorNodeId(null);
+              setSelectedNodeId(null);
+            }
           }}
           onGenerateBrainstorm={async (node) => {
             setIsProcessing(true);
